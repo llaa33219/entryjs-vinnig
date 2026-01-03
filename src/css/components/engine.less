@@ -1,0 +1,838 @@
+.entryEngineWorkspace {
+    height: 35px;
+    width: 480px;
+    background-color: white;
+    border-top: 1pt solid #ebeff1;
+}
+
+.entryEngineWorkspace_w {
+    position: relative;
+    overflow: hidden;
+    width: 270px;
+    background-color: white;
+    border: 1px solid #d6e9f4;
+    border-radius: 6px;
+}
+.entryEngineWorkspace_w:after {
+    display: block;
+    clear: both;
+    content: '';
+}
+
+.entryPopupWindow > .entryEngineWorkspace {
+    position: absolute;
+    top: auto !important;
+    width: 100% !important;
+    bottom: 0px;
+}
+
+.entryPopupWindow > .entryEngineWorkspace_w {
+    position: absolute;
+    width: 100% !important;
+    top: 0px !important;
+}
+
+.entryPopupWindow > .entryEngineWorkspace_w > .entryRunButtonWorkspace_w {
+    display: none;
+    top: 37%;
+    left: 46%;
+}
+
+.entryPopupWindow > .entryEngineWorkspace_w > .entryRunButtonWorkspace_w2 {
+    display: block;
+    width: 111px;
+    height: 111px;
+    background-image: url('@{image_url}play_btn.png');
+    background-position: 40px center;
+    background-color: rgba(0, 0, 0, 0.5);
+    border-radius: 55px;
+    background-repeat: no-repeat;
+    right: 5px;
+    /*bottom: 5px;*/
+    bottom: -10px;
+    left: 44%;
+    top: 35%;
+}
+
+.entryPopupWindow > .entryEngineWorkspace_w > .entryStopButtonWorkspace_w2 {
+    display: block;
+    background-image: url('@{image_url}stop_btn.png');
+    background-repeat: no-repeat;
+    left: 20px;
+    color: transparent;
+    bottom: -10px;
+    width: 90px;
+    background-position: left;
+    color: @bora;
+}
+
+.entryPopupWindow > .entryEngineWorkspace_w > .entryStopButtonWorkspace_w {
+    display: none;
+}
+
+.entryPopupWindow > .entryEngineWorkspace_w > .entryCoordinateButtonWorkspace_w {
+    position: absolute;
+    right: 53px;
+    bottom: 12px;
+    margin: 0;
+    background-image: url('@{image_url}grid.png') !important;
+    background-size: 16px auto;
+}
+.entryPopupWindow > .entryEngineWorkspace_w > .entryCoordinateButtonWorkspace_w.toggleOn {
+    position: absolute;
+    right: 53px;
+    bottom: 12px;
+    margin: 0;
+    background-image: url('@{image_url}layers_icon_grid_nor_1.png') !important;
+    background-size: 16px auto;
+}
+
+.entryPopupWindow > .entryEngineWorkspace_w > .entryMaximizeButtonWorkspace_w {
+    position: absolute;
+    right: 6px;
+    bottom: 12px;
+    background-image: url('@{image_url}zoom_out_btn.png');
+    background-repeat: no-repeat;
+    background-size: 16px auto;
+}
+.entryPopupWindow > .entryEngineWorkspace_w > .entryEngineButtonWrapper {
+    display: block;
+    height: 48px;
+    border-top: 1px solid #d6e9f4;
+    box-sizing: border-box;
+    margin-top: 0;
+}
+
+.entryPopupWindow > .entryEngineWorkspace_w > .entryEngineButtonWrapper .entryRunButtonWorkspace_w,
+.entryPopupWindow > .entryEngineWorkspace_w > .entryEngineButtonWrapper .entryStopButtonWorkspace_w,
+.entryPopupWindow
+    > .entryEngineWorkspace_w
+    > .entryEngineButtonWrapper
+    .entryPauseButtonWorkspace_full,
+.entryPopupWindow
+    > .entryEngineWorkspace_w
+    > .entryEngineButtonWrapper
+    .entryRestartButtonWorkspace_full {
+    display: inline-block;
+    overflow: hidden;
+    flex: none;
+    width: auto;
+    height: auto;
+    border: 0;
+    margin-left: 24px;
+    border-radius: 0;
+    background: none;
+    font-size: 14px;
+    font-weight: 600;
+    color: #4f80ff;
+    line-height: 48px;
+}
+.entryPopupWindow
+    > .entryEngineWorkspace_w
+    > .entryEngineButtonWrapper
+    .entryRunButtonWorkspace_w:before,
+.entryPopupWindow
+    > .entryEngineWorkspace_w
+    > .entryEngineButtonWrapper
+    .entryRestartButtonWorkspace_full:before {
+    display: inline-block;
+    width: 14px;
+    height: 18px;
+    margin: 0 8px 0 0;
+    vertical-align: middle;
+    background-image: url('@{image_url}layers_icon_button_play_norx2.png');
+    background-repeat: no-repeat;
+    background-size: 14px auto;
+    content: '';
+}
+.entryPopupWindow
+    > .entryEngineWorkspace_w
+    > .entryEngineButtonWrapper
+    .entryStopButtonWorkspace_w:before {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    margin: 0 8px 0 0;
+    vertical-align: middle;
+    background-image: url('@{image_url}layers_icon_button_stop_norx2.png');
+    background-repeat: no-repeat;
+    background-size: 16px auto;
+    content: '';
+}
+.entryPopupWindow
+    > .entryEngineWorkspace_w
+    > .entryEngineButtonWrapper
+    .entryPauseButtonWorkspace_full:before {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    margin-right: 8px;
+    vertical-align: middle;
+    background-image: url('@{image_url}layers_icon_button_pause_norx2.png');
+    background-repeat: no-repeat;
+    background-size: 16px auto;
+    content: '';
+}
+
+.entryPopupWindow
+    > .entryEngineWorkspace_w
+    > .entryEngineButtonWrapper
+    > .entryAddButtonWorkspace_w {
+    display: none;
+}
+
+.entryEngineBlueWorkspace {
+    background-color: #61abdb;
+}
+
+.entryEngineButtonWorkspace {
+    border: none;
+    outline: none;
+    width: 25px;
+    height: 35px;
+    background-color: transparent;
+    background-repeat: no-repeat;
+    background-position: center;
+}
+
+.entryEngineButtonWorkspace_w {
+    border: none;
+    outline: none;
+    width: 25px;
+    height: 24px;
+    background-color: transparent;
+    background-repeat: no-repeat;
+    background-position: center;
+}
+
+.entryRunButtonPhone {
+    width: 100%;
+    height: 100%;
+    border: none;
+    background-color: transparent;
+    font-size: 12pt;
+    border-bottom: 2px solid #89c0d5;
+    .backgroundImage('layers_icon_button_play_nor.png');
+    background-position: 10px 50%;
+    background-repeat: no-repeat;
+}
+
+.entryStopButtonPhone {
+    width: 100%;
+    height: 100%;
+    border: none;
+    background-color: transparent;
+    font-size: 12pt;
+    border-bottom: 2px solid #89c0d5;
+    .backgroundImage('layers_icon_button_stop_nor.png');
+    background-position: 10px 50%;
+    background-repeat: no-repeat;
+}
+
+.entryRunButtonPhone.small {
+}
+
+.entryEnginePhone {
+    width: 100%;
+}
+
+.entryEngineHeaderPhone {
+    border-bottom: 1px solid #ccc;
+    width: 100%;
+    background-color: #fff;
+    height: 34px;
+}
+
+.entryEngineFooterPhone {
+    border-top: 1px solid #ccc;
+    width: 100%;
+    background-color: #fff;
+    height: 38px;
+}
+
+.entryMouseViewWorkspace {
+    position: relative;
+    font-size: 9pt;
+    margin: 0 auto;
+    width: 40%;
+    color: #61abdb;
+    line-height: 35px;
+    text-align: center;
+}
+
+.entryMouseViewWorkspace_w {
+    height: 32px;
+    font-size: 12px;
+    font-weight: bold;
+    margin: 0 auto;
+    padding: 10px 0 8px;
+    color: #4f80ff;
+    text-align: center;
+    letter-spacing: -0.4px;
+    line-height: 14px;
+
+    > input {
+        font-size: 10px;
+        line-height: 11px;
+        border: none;
+        font-weight: bold;
+        color: #555;
+        text-align: center;
+        letter-spacing: -0.4px;
+        user-select: none;
+    }
+}
+
+.entryEngineBlueWorkspace > .entryMouseViewWorkspace {
+    color: white;
+}
+
+.entryMaximizeButtonWorkspace {
+    float: left;
+    margin-left: 5px;
+    .backgroundImage('fullscreen_edit.png');
+}
+
+.entryMaximizeButtonPhone {
+    width: 20px;
+    height: 100%;
+    border: none;
+    float: right;
+    margin-right: 9px;
+    background-repeat: no-repeat;
+    background-position: center;
+    background-color: transparent;
+    .backgroundImage('layers_icon_fullmode01_nor.png');
+}
+
+.entryMaximizeButtonWorkspace_w {
+    float: right;
+    margin: 4px 6px 0 5px;
+    .backgroundImage('layers_icon_fullmode01_nor_1.png');
+    background-repeat: no-repeat;
+    background-size: 16px auto;
+}
+
+.entryEngineBlueWorkspace > .entryMaximizeButtonWorkspace {
+    .backgroundImage('fullscreen_play.png');
+}
+
+#entrySpeedPanelWorkspace {
+    width: 100%;
+    height: 0px;
+    background-color: #0e0;
+}
+
+.entrySpeedButtonWorkspace {
+    float: left;
+    background-size: contain;
+    width: 18px;
+    height: 16px;
+    margin-top: 8px;
+    margin-left: 10px;
+    .backgroundImage('speed_edit.png');
+    background-size: 18px auto;
+}
+
+.entrySpeedButtonWorkspace.on {
+    .backgroundImage('speed_edit_on.png');
+}
+
+.entryPopupWindow > div > .entrySpeedButtonWorkspace {
+    display: none;
+}
+
+.entryPopupWindow .entryMouseViewWorkspace_w {
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    width: 40%;
+    height: 48px;
+    margin: 0 auto;
+    padding: 0;
+    margin-left: -20%;
+    font-size: 14px;
+    font-weight: 600;
+    color: #4f80ff;
+    text-align: center;
+    line-height: 48px;
+}
+
+#entrySpeedProgressWorkspace {
+    overflow: hidden;
+    width: 100%;
+    height: 30px;
+    margin-top: 4px;
+    border-radius: 4px;
+    table-layout: fixed;
+    box-sizing: border-box;
+    border-spacing: 0;
+}
+#entrySpeedProgressWorkspace > tr > td {
+    height: 30px;
+    width: 20%;
+    cursor: pointer;
+}
+#entrySpeedProgressWorkspace .on {
+    background-size: 20px auto;
+    background-position: 50% 50%;
+    background-repeat: no-repeat;
+    .backgroundImage('ic_graph_chk.png');
+}
+
+#progressCell0 {
+    background-color: #cad8ff;
+}
+#progressCell1 {
+    background-color: #a7bfff;
+}
+#progressCell2 {
+    background-color: #95b3ff;
+}
+#progressCell3 {
+    background-color: #7299ff;
+}
+#progressCell4 {
+    background-color: #4f80ff;
+}
+
+#entrySpeedLabelWorkspace {
+    position: absolute;
+    left: 10px;
+    top: 12px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #000;
+    letter-spacing: -0.4px;
+    line-height: 11px;
+}
+
+#entrySpeedHandleWorkspace {
+    position: absolute !important;
+    cursor: pointer;
+    width: 18px;
+    height: 16px;
+    top: 21px;
+    z-index: 100;
+    .backgroundImage('speed_handle.png');
+}
+.entrySpeedBox {
+    position: absolute;
+    box-sizing: border-box;
+    height: 39px;
+    margin: 0px 0 -1px;
+    padding: 0 10px 0 60px;
+    border: 1px solid #e2e2e2;
+    border-width: 1px 0;
+    background-color: #f9f9f9;
+    clear: both;
+    z-index: 10;
+}
+
+.entryCoordinateButtonWorkspace {
+    float: right;
+    .backgroundImage('coordinates_edit.png');
+}
+
+.entryCoordinateButtonWorkspace_w {
+    float: right;
+    margin-top: 4px;
+    .backgroundImage('layers_icon_grid_nor.png');
+    background-size: 16px auto;
+}
+
+.entryCoordinateButtonWorkspace.toggleOn {
+    .backgroundImage('coordinates_edit_on.png');
+}
+
+.entryCoordinateButtonWorkspace_w.toggleOn {
+    .backgroundImage('layers_icon_grid_nor_1.png');
+}
+
+.entryEngineBlueWorkspace > .entryCoordinateButtonWorkspace {
+    .backgroundImage('coordinates_play.png');
+}
+
+.entryEngineButtonWrapper {
+    display: flex;
+    margin: 0 -1px -1px;
+    margin-top: 12px;
+}
+
+.entryRunButtonWorkspace {
+    float: right;
+    width: 80px;
+    background-position: 7px 50%;
+    padding-right: 10px;
+    text-align: right;
+    font-size: 9pt;
+    color: #61abdb;
+    .backgroundImage('playbutton_edit.png');
+}
+
+.entryAddButtonWorkspace_w,
+.entryPauseButtonWorkspace_w,
+.entryRestartButtonWorkspace_w {
+    flex: none;
+    width: 50%;
+    height: 36px;
+    border: 1px solid #4f80ff;
+    border-radius: 4px;
+    background-color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    color: #4f80ff;
+    letter-spacing: -0.43px;
+    line-height: 34px;
+    text-align: center;
+    &:before {
+        .backgroundImage('layers_icon_button_plus_nor.png');
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        margin: 11px 2px 0 0;
+        background-size: 12px auto;
+        vertical-align: top;
+        content: '';
+    }
+}
+.entryRestartButtonWorkspace_w {
+    background-color: #4f80ff;
+    color: #fff;
+}
+.entryPauseButtonWorkspace_w:before {
+    .backgroundImage('layers_icon_button_pause_nor.png');
+}
+.entryRestartButtonWorkspace_w:before {
+    .backgroundImage('layers_icon_button_play_nor_1.png');
+    margin-right: 4px;
+}
+
+.entryRunButtonWorkspace_w {
+    flex: 1 1 auto;
+    position: relative;
+    height: 36px;
+    padding: 0;
+    margin-left: 4px;
+    border: 1px solid #4f80ff;
+    border-radius: 4px;
+    background-color: #4f80ff;
+    background-size: 10px auto;
+    font-size: 12px;
+    font-weight: 600;
+    color: #fff;
+    text-align: center;
+    line-height: 34px;
+    &:before {
+        .backgroundImage('layers_icon_button_play_nor_1.png');
+        display: inline-block;
+        width: 11px;
+        height: 12px;
+        background-size: 11px auto;
+        margin: 11px 4px 0 0;
+        vertical-align: top;
+        content: '';
+    }
+}
+
+.collapsed > .entryRunButtonWorkspace_w {
+    color: transparent;
+    background-position: 50% 43%;
+}
+
+.entryRunButtonWorkspace_w2 {
+    display: none;
+}
+
+.entryEngineBlueWorkspace > .entryRunButtonWorkspace {
+    .backgroundImage('playbutton_play.png');
+    color: white;
+}
+
+.entryStopButtonWorkspace {
+    float: right;
+    width: 80px;
+    background-position: 7px 50%;
+    border-top: 1px solid #ccc;
+    padding-right: 10px;
+    text-align: right;
+    font-size: 9pt;
+    color: #61abdb;
+    .backgroundImage('stopbutton_pause.png');
+}
+
+.entryStopButtonWorkspace_w {
+    flex: 1 1 auto;
+    position: relative;
+    height: 36px;
+    padding: 0;
+    margin-left: 4px;
+    border: 1px solid #4f80ff;
+    border-radius: 4px;
+    background-color: #fff;
+    background-size: 10px auto;
+    font-size: 12px;
+    font-weight: 600;
+    color: #4f80ff;
+    text-align: center;
+    line-height: 34px;
+    &:before {
+        .backgroundImage('layers_icon_button_stop_nor_2.png');
+        background-size: 12px auto;
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        margin: 10px 4px 0 0;
+        vertical-align: top;
+        content: '';
+    }
+}
+.entryStopButtonWorkspace_w2 {
+    display: none;
+}
+
+.entryEngineBigButtonMinimize_popup {
+    border: none;
+    display: none;
+    margin: 0;
+    padding: 0;
+    position: absolute;
+    left: 50%;
+    width: 111px;
+    height: 111px;
+    margin-left: -55.5px;
+    top: 50%;
+    margin-top: -55.5px;
+    background-repeat: no-repeat;
+    background-position: 40px center;
+    background-color: rgba(0, 0, 0, 0.5);
+    border-radius: 55px;
+}
+
+.entryEngineBigButtonMinimize_popup:hover {
+    opacity: 0.8;
+}
+
+.entryEngineBigButtonMinimize_popup:focus {
+    outline: none;
+}
+
+.entryEngineBigButtonMinimize_popup.entryEngineBigButtonMinimize_popup_run {
+    .backgroundImage('play_btn.png');
+}
+
+.entryPopupWindow .entryEngineBigButtonMinimize_popup {
+    display: block;
+}
+
+.entryPopupWindow .entryPauseButtonWorkspace_w {
+    flex: 2;
+    order: 2;
+    display: none;
+}
+
+.entryPopupWindow .entryRestartButtonWorkspace_w {
+    display: none;
+}
+
+.entryPauseButtonWorkspace_full {
+    display: none;
+}
+
+.entryRestartButtonWorkspace_full {
+    display: none;
+}
+
+.nav_right_wrapper {
+    right: 0;
+}
+
+.navbar-default {
+    background-color: #89c1e4;
+    border-color: #89c1e4;
+    /*background-color: #4accaa;
+    border-color: #4accaa;*/
+}
+
+#project_name.normal {
+    background-color: #89c1e4;
+    /*background-color: #4accaa;*/
+}
+
+.btn-group > .btn {
+    background-color: transparent;
+    border-color: transparent;
+    /*background-color: #4accaa;
+    border-color: #4accaa;*/
+}
+
+.art_project_name {
+    background-color: white !important;
+}
+
+.art_project_name:hover {
+    border: 1px solid #b4b4b4 !important;
+}
+
+.tablet {
+    .entrySpeedButtonWorkspace {
+        width: 27px;
+        height: 19px;
+        margin-top: 2px;
+        .backgroundImage('speed_edit_big.png');
+    }
+
+    .entrySpeedButtonWorkspace.on {
+        .backgroundImage('speed_edit_big.png');
+    }
+
+    .entryCoordinateButtonWorkspace_w {
+        .backgroundImage('layers_icon_grid_nor_big.png');
+    }
+
+    .entryMaximizeButtonWorkspace_w {
+        .backgroundImage('layers_icon_fullmode01_nor_1_big.png');
+    }
+}
+
+.entryPopupWindow.tablet {
+    .entryEngineWorkspace_w > .entryCoordinateButtonWorkspace_w {
+        bottom: 5px;
+        background-image: url('@{image_url}grid_big.png') !important;
+    }
+
+    .entryEngineWorkspace_w > .entryMaximizeButtonWorkspace_w {
+        right: 0;
+        bottom: 5px;
+        background-image: url('@{image_url}zoom_out_btn_big.png');
+    }
+}
+
+.practical_course_mode {
+    .entryRunButtonWorkspace_w {
+        border-color: @basePurple;
+        &:before {
+            .backgroundImage('layers_icon_button_play_nor_1.png');
+        }
+    }
+    .entryAddButtonWorkspace_w {
+        border-color: @basePurple;
+        &:before {
+            .backgroundImage('layers_icon_button_plus_nor_practical_course_mode.png');
+        }
+    }
+    .entryPauseButtonWorkspace_w {
+        border-color: @basePurple;
+        &:before {
+            .backgroundImage('layers_icon_button_pause_nor_practical_course_mode.png');
+        }
+    }
+
+    .entryStopButtonWorkspace_w {
+        border-color: @basePurple;
+        &:before {
+            .backgroundImage('layers_icon_button_stop_nor_2_practical_course_mode.png');
+        }
+    }
+}
+
+//audioShade
+.audioShadeCirclebox {
+    position: absolute;
+    margin: 0;
+    padding: 0;
+    background: rgba(255, 255, 255, 0.5);
+    text-align: center;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    -moz-flex-direction: column;
+    width: 100%;
+    height: calc(100%-32px);
+}
+.audioShadeCircle {
+    margin: auto;
+    margin-bottom: 6%;
+    padding: 0;
+    position: relative;
+    display: inline-block;
+    height: 34%;
+    width: auto;
+    aspect-ratio: 1 / 1;
+    border-radius: 50%;
+    background-color: #32d27d;
+    vertical-align: top;
+}
+.audioShadeInner {
+    margin: 0;
+    padding: 0;
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 60%;
+    height: 60%;
+    margin: auto;
+    background-color: #32d27d;
+    border-radius: 50%;
+    transform: scale(0.5);
+    transform-origin: center center;
+    animation: ani 3s linear infinite;
+    content: '';
+}
+.audioShadeInner:nth-of-type(2) {
+    animation-delay: 1s;
+}
+.audioShadeInner:nth-of-type(3) {
+    animation-delay: 2s;
+}
+.audioShadeInner:nth-of-type(4) {
+    animation-delay: 3s;
+}
+.audioShadeImg {
+    margin: 0;
+    padding: 0;
+    position: absolute;
+    left: 23%;
+    top: 23%;
+    width: 54%;
+    height: 54%;
+    z-index: 10;
+}
+.audioShadeText {
+    width: 100%;
+    height: 20%;
+    font-family: NanumGothic, 'Nanum Gothic';
+    font-size: 1.1em;
+    font-weight: bold;
+    font-stretch: normal;
+    font-style: normal;
+    line-height: normal;
+    letter-spacing: normal;
+    text-align: center;
+}
+.audioProgress {
+    width: 64%;
+    height: 64%;
+    position: absolute;
+    left: 18%;
+    top: 18%;
+}
+
+@keyframes ani {
+    0% {
+        transform: scale(0.5);
+        opacity: 0;
+    }
+    50% {
+        opacity: 0.1;
+    }
+    70% {
+        opacity: 0.09;
+    }
+    100% {
+        transform: scale(3);
+        opacity: 0;
+    }
+}
