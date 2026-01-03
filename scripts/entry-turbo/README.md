@@ -25,14 +25,30 @@ entry-turbo/
 └── README.md
 ```
 
-## 빠른 시작
+## 빠른 시작 (Entry 시스템에 주입)
 
 ```html
-<canvas id="entry-canvas" width="480" height="360"></canvas>
+<!-- 기존 Entry 페이지에 스크립트 추가 -->
+<script src="entry-turbo.min.js"></script>
+<script>
+  // 주입만 하면 끝! 시작/정지 버튼이 Turbo 모드로 작동
+  EntryTurbo.inject();
+</script>
+```
+
+**작동 방식:**
+- `#entryCanvas` 위에 오버레이 캔버스 자동 생성
+- Entry의 시작/정지 버튼 클릭 시 Entry Turbo가 대신 실행
+- 정지 시 오버레이 자동 숨김
+
+## 독립 실행 모드
+
+```html
+<canvas id="my-canvas" width="480" height="360"></canvas>
 <script src="entry-turbo.min.js"></script>
 <script>
   // 초기화 → 로드 → 실행
-  EntryTurbo.init('#entry-canvas');
+  EntryTurbo.init('#my-canvas');
   EntryTurbo.load(projectJson).then(() => {
     EntryTurbo.start();
   });
@@ -45,7 +61,10 @@ entry-turbo/
 <!-- CDN이나 자체 서버에서 로드 -->
 <script src="https://your-server.com/entry-turbo.min.js"></script>
 <script>
-  // Entry 프로젝트 ID로 직접 로드
+  // 방법 1: 기존 Entry에 주입
+  EntryTurbo.inject();
+  
+  // 방법 2: 독립 실행
   EntryTurbo.init('#canvas');
   EntryTurbo.loadFromUrl('https://playentry.org/api/project/PROJECT_ID')
     .then(() => EntryTurbo.start());
@@ -56,7 +75,9 @@ entry-turbo/
 
 | 메서드 | 설명 |
 |--------|------|
-| `EntryTurbo.init(canvas)` | 캔버스 초기화 |
+| `EntryTurbo.inject()` | 기존 Entry에 주입 (시작/정지 가로채기) |
+| `EntryTurbo.eject()` | 주입 해제 (원본 복원) |
+| `EntryTurbo.init(canvas)` | 캔버스 초기화 (독립 모드) |
 | `EntryTurbo.load(json)` | 프로젝트 JSON 로드 |
 | `EntryTurbo.loadFromUrl(url)` | URL에서 로드 |
 | `EntryTurbo.start()` | 실행 시작 |

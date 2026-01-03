@@ -919,13 +919,20 @@
         version: '1.0.0',
         renderer: null,
         runtime: null,
+        
+        // 주입 관련
+        injected: false,
+        overlayCanvas: null,
+        originalToggleRun: null,
+        originalToggleStop: null,
+        projectLoaded: false,
 
         /**
          * 캔버스에 초기화
          */
         init(canvas) {
             if (typeof canvas === 'string') {
-                canvas = document.getElementById(canvas) || document.querySelector(canvas);
+                canvas = document.getElementById(canvas.replace('#', '')) || document.querySelector(canvas);
             }
             
             if (!canvas) {
@@ -943,11 +950,219 @@
         },
 
         /**
+         * 기존 Entry 시스템에 주입 - entryCanvas 위에 오버레이 생성
+         */
+        inject() {
+            if (this.injected) return this;
+            
+            const entryCanvas = document.getElementById('entryCanvas');
+            if (!entryCanvas) {
+                console.warn('[EntryTurbo] #entryCanvas를 찾을 수 없습니다. 나중에 다시 시도하세요.');
+                return this;
+            }
+            
+            // 오버레이 캔버스 생성
+            this.overlayCanvas = document.createElement('canvas');
+            this.overlayCanvas.id = 'entry-turbo-overlay';
+            this.overlayCanvas.width = entryCanvas.width || 480;
+            this.overlayCanvas.height = entryCanvas.height || 360;
+            
+            // 스타일 설정 - entryCanvas 위에 절대 위치
+            this.overlayCanvas.style.cssText = `
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                z-index: 9999;
+                pointer-events: auto;
+                display: none;
+            `;
+            
+            // entryCanvas의 부모에 relative 설정 후 오버레이 추가
+            const parent = entryCanvas.parentElement;
+            if (parent) {
+                const computedStyle = window.getComputedStyle(parent);
+                if (computedStyle.position === 'static') {
+                    parent.style.position = 'relative';
+                }
+                parent.appendChild(this.overlayCanvas);
+            }
+            
+            // 렌더러와 런타임 초기화
+            this.renderer = new TurboRenderer(this.overlayCanvas);
+            this.runtime = new TurboRuntime(this.renderer);
+            
+            // Entry.engine 가로채기
+            this._hookEntryEngine();
+            
+            this.injected = true;
+            console.log('[EntryTurbo] 주입 완료 - 시작/정지 버튼이 Turbo 모드로 작동합니다.');
+            
+            return this;
+        },
+
+        /**
+         * Entry.engine의 toggleRun/toggleStop 가로채기
+         */
+        _hookEntryEngine() {
+            const self = this;
+            
+            // Entry 객체가 있는지 확인
+            if (typeof Entry === 'undefined' || !Entry.engine) {
+                console.warn('[EntryTurbo] Entry.engine을 찾을 수 없습니다. 폴링 시작...');
+                
+                // Entry가 로드될 때까지 폴링
+                const pollInterval = setInterval(() => {
+                    if (typeof Entry !== 'undefined' && Entry.engine) {
+                        clearInterval(pollInterval);
+                        self._hookEntryEngine();
+                    }
+                }, 100);
+                return;
+            }
+            
+            // 원본 함수 저장
+            this.originalToggleRun = Entry.engine.toggleRun.bind(Entry.engine);
+            this.originalToggleStop = Entry.engine.toggleStop.bind(Entry.engine);
+            
+            // toggleRun 가로채기
+            Entry.engine.toggleRun = async function() {
+                console.log('[EntryTurbo] toggleRun 가로챔');
+                
+                // 프로젝트 데이터 로드 (아직 안 했으면)
+                if (!self.projectLoaded) {
+                    await self._loadCurrentProject();
+                }
+                
+                // 기존 Entry 엔진 정지 상태 유지
+                if (Entry.engine.state !== 'stop') {
+                    // 이미 실행 중이면 원래 동작
+                    return self.originalToggleRun();
+                }
+                
+                // Turbo 모드 실행
+                self._showOverlay();
+                self.start();
+            };
+            
+            // toggleStop 가로채기
+            Entry.engine.toggleStop = async function() {
+                console.log('[EntryTurbo] toggleStop 가로챔');
+                
+                // Turbo 정지
+                self.stop();
+                self._hideOverlay();
+                
+                // 원본도 호출하여 UI 상태 동기화
+                // return self.originalToggleStop();
+            };
+            
+            console.log('[EntryTurbo] Entry.engine 후킹 완료');
+        },
+
+        /**
+         * 현재 Entry 프로젝트 데이터 로드
+         */
+        async _loadCurrentProject() {
+            try {
+                // Entry.project에서 데이터 가져오기
+                if (typeof Entry !== 'undefined' && Entry.exportProject) {
+                    const projectData = Entry.exportProject();
+                    if (projectData) {
+                        await this.load(projectData);
+                        this.projectLoaded = true;
+                        console.log('[EntryTurbo] 프로젝트 로드 완료');
+                        return;
+                    }
+                }
+                
+                // container에서 직접 가져오기
+                if (typeof Entry !== 'undefined' && Entry.container) {
+                    const objects = Entry.container.objects_ || Entry.container.objects;
+                    const variables = Entry.variableContainer?.variables_ || [];
+                    const lists = Entry.variableContainer?.lists_ || [];
+                    
+                    if (objects && objects.length > 0) {
+                        const projectData = {
+                            objects: objects.map(obj => obj.toJSON ? obj.toJSON() : obj),
+                            variables: variables.map(v => v.toJSON ? v.toJSON() : v),
+                            lists: lists.map(l => l.toJSON ? l.toJSON() : l)
+                        };
+                        await this.load(projectData);
+                        this.projectLoaded = true;
+                        console.log('[EntryTurbo] 프로젝트 로드 완료 (container에서)');
+                        return;
+                    }
+                }
+                
+                console.warn('[EntryTurbo] 프로젝트 데이터를 가져올 수 없습니다.');
+            } catch (e) {
+                console.error('[EntryTurbo] 프로젝트 로드 실패:', e);
+            }
+        },
+
+        /**
+         * 오버레이 캔버스 표시
+         */
+        _showOverlay() {
+            if (this.overlayCanvas) {
+                this.overlayCanvas.style.display = 'block';
+                
+                // 크기 동기화
+                const entryCanvas = document.getElementById('entryCanvas');
+                if (entryCanvas) {
+                    this.overlayCanvas.width = entryCanvas.width || 480;
+                    this.overlayCanvas.height = entryCanvas.height || 360;
+                    this.renderer?.resize(this.overlayCanvas.width, this.overlayCanvas.height);
+                }
+            }
+        },
+
+        /**
+         * 오버레이 캔버스 숨김
+         */
+        _hideOverlay() {
+            if (this.overlayCanvas) {
+                this.overlayCanvas.style.display = 'none';
+            }
+        },
+
+        /**
+         * 주입 해제
+         */
+        eject() {
+            if (!this.injected) return this;
+            
+            // 원본 함수 복원
+            if (typeof Entry !== 'undefined' && Entry.engine) {
+                if (this.originalToggleRun) {
+                    Entry.engine.toggleRun = this.originalToggleRun;
+                }
+                if (this.originalToggleStop) {
+                    Entry.engine.toggleStop = this.originalToggleStop;
+                }
+            }
+            
+            // 오버레이 제거
+            if (this.overlayCanvas && this.overlayCanvas.parentElement) {
+                this.overlayCanvas.parentElement.removeChild(this.overlayCanvas);
+            }
+            
+            this.injected = false;
+            this.overlayCanvas = null;
+            this.projectLoaded = false;
+            
+            console.log('[EntryTurbo] 주입 해제 완료');
+            return this;
+        },
+
+        /**
          * 프로젝트 JSON 로드
          */
         async load(projectJson) {
             if (!this.runtime) {
-                throw new Error('EntryTurbo not initialized. Call init() first.');
+                throw new Error('EntryTurbo not initialized. Call init() or inject() first.');
             }
             
             const data = typeof projectJson === 'string' ? JSON.parse(projectJson) : projectJson;
@@ -1010,6 +1225,7 @@
          * 리소스 정리
          */
         destroy() {
+            this.eject();
             if (this.runtime) {
                 this.runtime.destroy();
                 this.runtime = null;
