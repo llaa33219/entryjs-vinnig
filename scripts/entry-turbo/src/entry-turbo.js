@@ -18,6 +18,7 @@
     const BlockCompiler = {
         compilers: {},
         cache: new Map(),
+        debugMode: false, // 디버그 모드
 
         compileThread(thread, context = {}) {
             const cacheKey = JSON.stringify(thread);
@@ -26,6 +27,11 @@
             }
 
             const code = this.generateCode(thread, context);
+            
+            if (this.debugMode) {
+                console.log('[BlockCompiler] Generated code:', code);
+            }
+            
             const compiledFn = this.createFunction(code, context);
             
             this.cache.set(cacheKey, compiledFn);
@@ -53,8 +59,11 @@
 
         compileBlock(block, context) {
             if (!block || typeof block !== 'object') return '';
+            if (Array.isArray(block)) return ''; // 배열인 경우 스킵
             
             const { type, params = [], statements = [] } = block;
+            
+            if (!type) return '';
 
             if (this.compilers[type]) {
                 return this.compilers[type](params, statements, context, this);
@@ -64,108 +73,193 @@
         },
 
         compileDefaultBlock(type, params, statements, context) {
-            const p = (i) => this.compileParam(params[i]);
-            
-            const blockMap = {
-                // 시작
-                'when_run_button_click': '// start',
-                'when_some_key_pressed': `if (runtime.pressedKey !== ${p(0)}) return;`,
-                
-                // 흐름
-                'wait_second': `yield { type: 'wait', duration: ${p(0)} * 1000 };`,
-                'repeat_basic': this.compileRepeat(params, statements, context),
-                'repeat_inf': this.compileRepeatInf(statements, context),
-                'repeat_while_true': this.compileRepeatWhile(params, statements, context),
-                '_if': this.compileIf(params, statements, context),
-                'if_else': this.compileIfElse(params, statements, context),
-                'stop_repeat': 'break;',
-                'stop_object': 'return;',
-                
-                // 움직임
-                'move_direction': `entity.move(${p(0)});`,
-                'move_x': `entity.setX(entity.x + ${p(0)});`,
-                'move_y': `entity.setY(entity.y + ${p(0)});`,
-                'locate_x': `entity.setX(${p(0)});`,
-                'locate_y': `entity.setY(${p(0)});`,
-                'locate_xy': `entity.setX(${p(0)}); entity.setY(${p(1)});`,
-                'locate': `entity.moveTo(${p(0)});`,
-                'rotate_by_angle': `entity.rotate(${p(0)});`,
-                'direction_relative': `entity.setDirection(entity.direction + ${p(0)});`,
-                'rotate_by_angle_time': `yield* runtime.rotateDuring(entity, ${p(0)}, ${p(1)});`,
-                'move_to_angle': `entity.moveToAngle(${p(0)}, ${p(1)});`,
-                
-                // 형태
-                'show': 'entity.setVisible(true);',
-                'hide': 'entity.setVisible(false);',
-                'dialog_time': `yield* runtime.sayForSecs(entity, ${p(0)}, ${p(1)});`,
-                'dialog': `runtime.say(entity, ${p(0)});`,
-                'remove_dialog': 'runtime.removeDialog(entity);',
-                'change_to_next_shape': 'entity.nextCostume();',
-                'change_to_prev_shape': 'entity.prevCostume();',
-                'add_effect_amount': `entity.addEffect('${params[0]}', ${p(1)});`,
-                'change_effect_amount': `entity.setEffect('${params[0]}', ${p(1)});`,
-                'erase_all_effects': 'entity.clearEffects();',
-                'change_scale_size': `entity.setSize(entity.size + ${p(0)});`,
-                'set_scale_size': `entity.setSize(${p(0)});`,
-                
-                // 소리
-                'sound_something': `runtime.playSound(entity, ${p(0)});`,
-                'sound_something_wait': `yield* runtime.playSoundAndWait(entity, ${p(0)});`,
-                'sound_volume_change': `runtime.changeVolume(${p(0)});`,
-                'sound_volume_set': `runtime.setVolume(${p(0)});`,
-                'sound_silent_all': 'runtime.stopAllSounds();',
-                
-                // 판단
-                'is_press_some_key': `(runtime.isKeyPressed(${p(0)}))`,
-                'is_clicked': '(runtime.isMouseDown)',
-                'reach_something': `(entity.isTouching(${p(0)}))`,
-                
-                // 계산
-                'calc_basic': this.compileCalcBasic(params),
-                'calc_rand': `runtime.random(${p(0)}, ${p(1)})`,
-                'coordinate_mouse': `runtime.mouse${params[0] === 'x' ? 'X' : 'Y'}`,
-                'coordinate_object': `runtime.getObjectCoord(${p(0)}, '${params[1]}')`,
-                'calc_operation': this.compileCalcOperation(params),
-                'get_project_timer_value': 'runtime.getTimer()',
-                'length_of_string': `String(${p(0)}).length`,
-                'combine_something': `(String(${p(0)}) + String(${p(1)}))`,
-                'char_at': `String(${p(1)}).charAt(${p(0)} - 1)`,
-                
-                // 변수
-                'set_variable': `vars['${params[1]}'] = ${p(0)};`,
-                'change_variable': `vars['${params[1]}'] = (Number(vars['${params[1]}']) || 0) + ${p(0)};`,
-                'get_variable': `vars['${params[0]}']`,
-                'show_variable': `runtime.showVariable('${params[0]}');`,
-                'hide_variable': `runtime.hideVariable('${params[0]}');`,
-                
-                // 리스트
-                'add_value_to_list': `lists['${params[1]}'].push(${p(0)});`,
-                'remove_value_from_list': `lists['${params[1]}'].splice(${p(0)} - 1, 1);`,
-                'insert_value_to_list': `lists['${params[2]}'].splice(${p(1)} - 1, 0, ${p(0)});`,
-                'change_value_list_index': `lists['${params[2]}'][${p(1)} - 1] = ${p(0)};`,
-                'value_of_index_from_list': `(lists['${params[1]}'][${p(0)} - 1] || 0)`,
-                'length_of_list': `lists['${params[0]}'].length`,
-                
-                // 붓
-                'start_drawing': 'entity.startDrawing();',
-                'stop_drawing': 'entity.stopDrawing();',
-                'set_color': `entity.setBrushColor(${p(0)});`,
-                'set_thickness': `entity.setBrushThickness(${p(0)});`,
-                'clear_stamp': 'runtime.clearCanvas();',
-                'stamp': 'entity.stamp();',
-                
-                // 신호
-                'when_message_cast': `// message: ${params[0]}`,
-                'message_cast': `runtime.broadcast('${params[0]}');`,
-                'message_cast_wait': `yield* runtime.broadcastAndWait('${params[0]}');`,
-                
-                // 복제
-                'create_clone': `runtime.createClone(${p(0)});`,
-                'when_clone_start': '// clone start',
-                'delete_clone': 'if (entity.isClone) { entity.destroy(); return; }'
+            // params 안전하게 처리
+            const safeParams = Array.isArray(params) ? params : [];
+            const p = (i) => {
+                if (i >= safeParams.length) return '0';
+                return this.compileParam(safeParams[i]);
             };
             
-            return blockMap[type] || `/* ${type} */`;
+            // 드롭다운/필드 값 가져오기 (문자열로)
+            const f = (i) => {
+                if (i >= safeParams.length) return '';
+                const param = safeParams[i];
+                if (param === null || param === undefined) return '';
+                if (typeof param === 'string') return param;
+                if (typeof param === 'number') return String(param);
+                return '';
+            };
+            
+            // 제어 구조 블록은 별도 처리
+            switch (type) {
+                case 'repeat_basic':
+                    return this.compileRepeat(safeParams, statements, context);
+                case 'repeat_inf':
+                    return this.compileRepeatInf(statements, context);
+                case 'repeat_while_true':
+                    return this.compileRepeatWhile(safeParams, statements, context);
+                case '_if':
+                    return this.compileIf(safeParams, statements, context);
+                case 'if_else':
+                    return this.compileIfElse(safeParams, statements, context);
+                case 'calc_basic':
+                    return this.compileCalcBasic(safeParams);
+                case 'calc_operation':
+                    return this.compileCalcOperation(safeParams);
+                case 'boolean_basic_operator':
+                    return this.compileBooleanOperator(safeParams);
+                case 'boolean_and_or':
+                    return this.compileBooleanAndOr(safeParams);
+                case 'boolean_not':
+                    return `(!(${p(1)}))`;
+            }
+            
+            // 일반 블록 매핑
+            switch (type) {
+                // 시작 블록들
+                case 'when_run_button_click': return '// start';
+                case 'when_some_key_pressed': return '// key event';
+                case 'when_object_click': return '// click event';
+                case 'when_message_cast': return '// message event';
+                case 'when_clone_start': return '// clone start';
+                case 'when_scene_start': return '// scene start';
+                
+                // 흐름
+                case 'wait_second': return `yield { type: 'wait', duration: ${p(0)} * 1000 };`;
+                case 'stop_repeat': return 'break;';
+                case 'stop_object': return 'return;';
+                case 'restart_project': return 'runtime.restart();';
+                case 'stop_all': return 'runtime.stopAll();';
+                
+                // 움직임
+                case 'move_direction': return `entity.move(${p(0)});`;
+                case 'move_x': return `entity.setX(entity.x + ${p(0)});`;
+                case 'move_y': return `entity.setY(entity.y + ${p(0)});`;
+                case 'locate_x': return `entity.setX(${p(0)});`;
+                case 'locate_y': return `entity.setY(${p(0)});`;
+                case 'locate_xy': return `entity.setX(${p(0)}); entity.setY(${p(1)});`;
+                case 'locate': return `entity.moveTo(${p(0)});`;
+                case 'locate_object_time': return `yield* runtime.glideToEntity(entity, ${p(0)}, ${p(1)});`;
+                case 'rotate_by_angle': return `entity.rotate(${p(0)});`;
+                case 'rotate_by_angle_dropdown': return `entity.rotate(${p(0)});`;
+                case 'direction_relative': return `entity.setDirection(entity.direction + ${p(0)});`;
+                case 'rotate_absolute': return `entity.setRotation(${p(0)});`;
+                case 'direction_absolute': return `entity.setDirection(${p(0)});`;
+                case 'see_angle_object': return `entity.lookAt(${p(0)});`;
+                case 'move_to_angle': return `entity.moveToAngle(${p(0)}, ${p(1)});`;
+                case 'rotate_by_angle_time': return `yield* runtime.rotateDuring(entity, ${p(0)}, ${p(1)});`;
+                case 'bounce_wall': return 'entity.bounceWall();';
+                case 'flip_arrow_horizontal': return 'entity.flipX();';
+                case 'flip_arrow_vertical': return 'entity.flipY();';
+                
+                // 형태
+                case 'show': return 'entity.setVisible(true);';
+                case 'hide': return 'entity.setVisible(false);';
+                case 'dialog_time': return `yield* runtime.sayForSecs(entity, ${p(0)}, ${p(1)});`;
+                case 'dialog': return `runtime.say(entity, ${p(0)});`;
+                case 'remove_dialog': return 'runtime.removeDialog(entity);';
+                case 'change_to_some_shape': return `entity.setCostumeByName(${p(0)});`;
+                case 'change_to_next_shape': return `entity.${f(0) === 'prev' ? 'prevCostume' : 'nextCostume'}();`;
+                case 'add_effect_amount': return `entity.addEffect('${f(0)}', ${p(1)});`;
+                case 'change_effect_amount': return `entity.setEffect('${f(0)}', ${p(1)});`;
+                case 'erase_all_effects': return 'entity.clearEffects();';
+                case 'change_scale_size': return `entity.setSize(entity.size + ${p(0)});`;
+                case 'set_scale_size': return `entity.setSize(${p(0)});`;
+                case 'flip_x': return 'entity.flipY();';
+                case 'flip_y': return 'entity.flipX();';
+                case 'change_object_index': return `entity.setZIndex('${f(0)}');`;
+                
+                // 소리 (다양한 소리 블록 지원)
+                case 'sound_something': return `runtime.playSound(entity, ${p(0)});`;
+                case 'sound_something_with_block': return `runtime.playSound(entity, ${p(0)});`;
+                case 'sound_something_second_with_block': return `runtime.playSoundForSec(entity, ${p(0)}, ${p(1)});`;
+                case 'sound_something_wait': return `yield* runtime.playSoundAndWait(entity, ${p(0)});`;
+                case 'sound_something_wait_with_block': return `yield* runtime.playSoundAndWait(entity, ${p(0)});`;
+                case 'sound_volume_change': return `runtime.changeVolume(${p(0)});`;
+                case 'sound_volume_set': return `runtime.setVolume(${p(0)});`;
+                case 'sound_silent_all': return 'runtime.stopAllSounds();';
+                case 'play_bgm': return `runtime.playBGM(entity, ${p(0)});`;
+                case 'stop_bgm': return 'runtime.stopBGM();';
+                
+                // 판단 (불리언 반환)
+                case 'is_clicked': return '(runtime.isMouseDown)';
+                case 'is_object_clicked': return '(runtime.isEntityClicked(entity))';
+                case 'is_press_some_key': return `(runtime.isKeyPressed(${p(0)}))`;
+                case 'reach_something': return `(entity.isTouching(${p(1)}))`;
+                case 'is_included_in_list': return `(runtime.listContains('${f(1)}', ${p(3)}))`;
+                case 'True': return 'true';
+                case 'False': return 'false';
+                
+                // 계산
+                case 'calc_rand': return `runtime.random(${p(1)}, ${p(3)})`;
+                case 'coordinate_mouse': return `runtime.mouse${f(1) === 'x' ? 'X' : 'Y'}`;
+                case 'coordinate_object': return `runtime.getObjectCoord(${p(1)}, '${f(3)}')`;
+                case 'quotient_and_mod': return `(${f(5) === 'MOD' ? `(${p(1)} % ${p(3)})` : `Math.floor(${p(1)} / ${p(3)})`})`;
+                case 'get_project_timer_value': return 'runtime.getTimer()';
+                case 'get_date': return `runtime.getDate('${f(1)}')`;
+                case 'distance_something': return `entity.distanceTo(${p(1)})`;
+                case 'length_of_string': return `String(${p(1)}).length`;
+                case 'combine_something': return `(String(${p(1)}) + String(${p(3)}))`;
+                case 'char_at': return `String(${p(1)}).charAt(${p(3)} - 1)`;
+                case 'substring': return `String(${p(1)}).substring(${p(3)} - 1, ${p(5)})`;
+                case 'index_of_string': return `(String(${p(1)}).indexOf(${p(3)}) + 1)`;
+                case 'replace_string': return `String(${p(1)}).split(${p(3)}).join(${p(5)})`;
+                case 'change_string_case': return `String(${p(1)}).${f(3) === 'toUpperCase' ? 'toUpperCase' : 'toLowerCase'}()`;
+                
+                // 변수
+                case 'set_variable': return `vars['${f(0)}'] = ${p(1)};`;
+                case 'change_variable': return `vars['${f(0)}'] = (Number(vars['${f(0)}']) || 0) + ${p(1)};`;
+                case 'get_variable': return `(vars['${f(0)}'] || 0)`;
+                case 'show_variable': return `runtime.showVariable('${f(0)}');`;
+                case 'hide_variable': return `runtime.hideVariable('${f(0)}');`;
+                
+                // 리스트
+                case 'add_value_to_list': return `(lists['${f(1)}'] || (lists['${f(1)}'] = [])).push(${p(0)});`;
+                case 'remove_value_from_list': return `(lists['${f(1)}'] || []).splice(${p(0)} - 1, 1);`;
+                case 'insert_value_to_list': return `(lists['${f(1)}'] || (lists['${f(1)}'] = [])).splice(${p(2)} - 1, 0, ${p(0)});`;
+                case 'change_value_list_index': return `if (lists['${f(0)}']) lists['${f(0)}'][${p(1)} - 1] = ${p(2)};`;
+                case 'value_of_index_from_list': return `((lists['${f(1)}'] || [])[${p(3)} - 1] || 0)`;
+                case 'length_of_list': return `(lists['${f(1)}'] || []).length`;
+                case 'show_list': return `runtime.showList('${f(0)}');`;
+                case 'hide_list': return `runtime.hideList('${f(0)}');`;
+                
+                // 붓
+                case 'start_drawing': return 'entity.startDrawing();';
+                case 'stop_drawing': return 'entity.stopDrawing();';
+                case 'set_color': return `entity.setBrushColor(${p(0)});`;
+                case 'set_thickness': return `entity.setBrushThickness(${p(0)});`;
+                case 'change_thickness': return `entity.changeBrushThickness(${p(0)});`;
+                case 'set_brush_tranparency': return `entity.setBrushOpacity(${p(0)});`;
+                case 'change_brush_transparency': return `entity.changeBrushOpacity(${p(0)});`;
+                case 'brush_erase_all': return 'runtime.clearCanvas();';
+                case 'brush_stamp': return 'entity.stamp();';
+                
+                // 신호
+                case 'message_cast': return `runtime.broadcast('${f(0)}');`;
+                case 'message_cast_wait': return `yield* runtime.broadcastAndWait('${f(0)}');`;
+                
+                // 복제
+                case 'create_clone': return `runtime.createClone('${f(0)}' === 'self' ? entity.id : '${f(0)}');`;
+                case 'delete_clone': return 'if (entity.isClone) { entity.destroy(); return; }';
+                
+                // 묻고 답하기
+                case 'ask_and_wait': return `yield* runtime.askAndWait(entity, ${p(0)});`;
+                case 'get_canvas_input_value': return 'runtime.getAnswer()';
+                
+                // 기본 값 블록들
+                case 'number': return p(0);
+                case 'text': return p(0);
+                case 'angle': return p(0);
+                case 'get_pictures': return p(0);
+                case 'get_sounds': return p(0);
+                case 'color': return p(0);
+                
+                default:
+                    if (this.debugMode) {
+                        console.log(`[BlockCompiler] Unknown block type: ${type}`, safeParams);
+                    }
+                    return `/* unknown: ${type} */`;
+            }
         },
 
         compileParam(param) {
@@ -173,10 +267,40 @@
             if (typeof param === 'number') return String(param);
             if (typeof param === 'string') return JSON.stringify(param);
             if (typeof param === 'boolean') return String(param);
-            if (typeof param === 'object' && param.type) {
-                return this.compileBlock(param, {});
+            
+            // 배열인 경우 (statements) - 먼저 체크
+            if (Array.isArray(param)) {
+                return '0';
             }
-            return JSON.stringify(param);
+            
+            // 중첩된 블록인 경우 (type 속성이 있음)
+            if (typeof param === 'object') {
+                if (param.type) {
+                    // 값 블록 (number, text 등 기본 타입)
+                    if (param.type === 'number' || param.type === 'text' || param.type === 'angle') {
+                        const val = param.params && param.params[0];
+                        if (val === null || val === undefined) return '0';
+                        if (typeof val === 'number') return String(val);
+                        return JSON.stringify(String(val));
+                    }
+                    
+                    // 다른 블록 타입인 경우 컴파일 시도
+                    const result = this.compileBlock(param, {});
+                    // 결과가 표현식이면 그대로 반환, 문장이면 0 반환
+                    if (result && !result.includes(';') && result.trim() !== '') {
+                        return result;
+                    }
+                    return '0';
+                }
+                // 기타 객체
+                try {
+                    return JSON.stringify(param);
+                } catch (e) {
+                    return '0';
+                }
+            }
+            
+            return '0';
         },
 
         compileRepeat(params, statements, context) {
@@ -212,22 +336,44 @@
 
         compileCalcBasic(params) {
             const ops = { 'PLUS': '+', 'MINUS': '-', 'MULTI': '*', 'DIVIDE': '/' };
-            return `(${this.compileParam(params[0])} ${ops[params[1]] || '+'} ${this.compileParam(params[2])})`;
+            const op = (params[1] && typeof params[1] === 'string') ? params[1] : 'PLUS';
+            return `(${this.compileParam(params[0])} ${ops[op] || '+'} ${this.compileParam(params[2])})`;
         },
 
         compileCalcOperation(params) {
             const v = this.compileParam(params[1]);
+            const op = (params[3] && typeof params[3] === 'string') ? params[3] : 'round';
             const ops = {
                 'sin': `Math.sin(${v} * Math.PI / 180)`,
                 'cos': `Math.cos(${v} * Math.PI / 180)`,
                 'tan': `Math.tan(${v} * Math.PI / 180)`,
+                'asin_radian': `(Math.asin(${v}) * 180 / Math.PI)`,
+                'acos_radian': `(Math.acos(${v}) * 180 / Math.PI)`,
+                'atan_radian': `(Math.atan(${v}) * 180 / Math.PI)`,
+                'square': `(${v} * ${v})`,
+                'root': `Math.sqrt(${v})`,
                 'sqrt': `Math.sqrt(${v})`,
                 'abs': `Math.abs(${v})`,
                 'round': `Math.round(${v})`,
                 'floor': `Math.floor(${v})`,
-                'ceil': `Math.ceil(${v})`
+                'ceil': `Math.ceil(${v})`,
+                'ln': `Math.log(${v})`,
+                'log': `(Math.log(${v}) / Math.LN10)`,
+                'factorial': `runtime.factorial(${v})`,
+                'unnatural': `(${v} - Math.floor(${v}))`
             };
-            return ops[params[0]] || v;
+            return ops[op] || `Math.round(${v})`;
+        },
+        
+        compileBooleanOperator(params) {
+            const ops = { 'EQUAL': '===', 'NOT_EQUAL': '!==', 'GREATER': '>', 'LESS': '<', 'GREATER_OR_EQUAL': '>=', 'LESS_OR_EQUAL': '<=' };
+            const op = (params[1] && typeof params[1] === 'string') ? params[1] : 'EQUAL';
+            return `(${this.compileParam(params[0])} ${ops[op] || '==='} ${this.compileParam(params[2])})`;
+        },
+        
+        compileBooleanAndOr(params) {
+            const op = (params[1] === 'OR') ? '||' : '&&';
+            return `(${this.compileParam(params[0])} ${op} ${this.compileParam(params[2])})`;
         },
 
         createFunction(code, context) {
