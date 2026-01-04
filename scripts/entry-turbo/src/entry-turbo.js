@@ -1,10 +1,10 @@
 /**
  * Entry Turbo - 고성능 EntryJS 런타임
  * 
- * Entry 프로젝트를 최적화된 방식으로 실행합니다.
- * 기존 EntryJS 없이 독립적으로 작동합니다.
+ * Entry 블록을 JavaScript로 JIT 컴파일하여 고속 실행합니다.
+ * Entry.block 스키마를 활용하여 올바른 파라미터 추출을 보장합니다.
  * 
- * @version 1.0.0
+ * @version 2.0.0
  * @license MIT
  */
 
@@ -12,377 +12,707 @@
     'use strict';
 
     // ============================================================
-    // BlockCompiler - 블록을 JavaScript로 컴파일
+    // TurboCompiler - Entry 블록을 JavaScript로 JIT 컴파일
     // ============================================================
     
-    const BlockCompiler = {
-        compilers: {},
+    const TurboCompiler = {
         cache: new Map(),
-        debugMode: false, // 디버그 모드
+        debug: false,
 
-        compileThread(thread, context = {}) {
-            const cacheKey = JSON.stringify(thread);
+        /**
+         * 스레드(블록 배열)를 컴파일된 제너레이터 함수로 변환
+         */
+        compileThread(blocks, objectId) {
+            const cacheKey = JSON.stringify(blocks) + objectId;
             if (this.cache.has(cacheKey)) {
                 return this.cache.get(cacheKey);
             }
 
-            const code = this.generateCode(thread, context);
-            
-            if (this.debugMode) {
-                console.log('[BlockCompiler] Generated code:', code);
-            }
-            
-            const compiledFn = this.createFunction(code, context);
-            
-            this.cache.set(cacheKey, compiledFn);
-            return compiledFn;
-        },
+            try {
+                const bodyCode = this.compileBlocks(blocks);
+                const code = `
+                    return async function* turboThread(entity, runtime) {
+                        const vars = runtime.variables;
+                        const lists = runtime.lists;
+                        try {
+                            ${bodyCode}
+                        } catch (e) {
+                            console.error('[TurboCompiler] Runtime error:', e);
+                        }
+                    };
+                `;
 
-        generateCode(blocks, context) {
-            const lines = [
-                'return async function*(entity, runtime) {',
-                '  const vars = runtime.variables;',
-                '  const lists = runtime.lists;',
-                '  let _loopCount = 0;'
-            ];
-            
-            for (const block of blocks) {
-                const blockCode = this.compileBlock(block, context);
-                if (blockCode) {
-                    lines.push('  ' + blockCode);
+                if (this.debug) {
+                    console.log('[TurboCompiler] Generated code:\n', code);
                 }
+
+                const fn = new Function(code)();
+                this.cache.set(cacheKey, fn);
+                return fn;
+            } catch (e) {
+                console.error('[TurboCompiler] Compilation error:', e);
+                return this.createFallbackThread(blocks);
             }
-            
-            lines.push('};');
-            return lines.join('\n');
         },
 
-        compileBlock(block, context) {
-            if (!block || typeof block !== 'object') return '';
-            if (Array.isArray(block)) return ''; // 배열인 경우 스킵
+        /**
+         * 블록 배열을 JavaScript 코드로 컴파일
+         */
+        compileBlocks(blocks) {
+            if (!blocks || !Array.isArray(blocks)) return '';
+            return blocks.map(block => this.compileBlock(block)).filter(Boolean).join('\n');
+        },
+
+        /**
+         * 단일 블록을 JavaScript 코드로 컴파일
+         */
+        compileBlock(block) {
+            if (!block || typeof block !== 'object' || Array.isArray(block)) return '';
             
-            const { type, params = [], statements = [] } = block;
-            
+            const { type } = block;
             if (!type) return '';
 
-            if (this.compilers[type]) {
-                return this.compilers[type](params, statements, context, this);
+            // Entry.block 스키마 가져오기
+            const schema = typeof Entry !== 'undefined' ? Entry.block?.[type] : null;
+
+            // 컴파일러가 지원하는 블록인지 확인
+            let compiler = this.blockCompilers[type];
+            
+            // 동적 함수 블록 컴파일러 확인 (func_XXXX)
+            if (!compiler && type.startsWith('func_')) {
+                compiler = this.getFunctionCompiler(type);
+            }
+            
+            // 동적 파라미터 블록 확인 (stringParam_*, booleanParam_*)
+            if (!compiler && (type.startsWith('stringParam_') || type.startsWith('booleanParam_'))) {
+                return `runtime.getFunctionParam(entity, '${type}')`;
+            }
+            
+            if (compiler) {
+                try {
+                    return compiler.call(this, block, schema);
+                } catch (e) {
+                    if (this.debug) console.warn(`[TurboCompiler] Failed to compile ${type}:`, e);
+                }
             }
 
-            return this.compileDefaultBlock(type, params, statements, context);
+            // 지원하지 않는 블록 → 건너뛰기
+            return this.compileFallback(block, type);
         },
 
-        compileDefaultBlock(type, params, statements, context) {
-            // params 안전하게 처리
-            const safeParams = Array.isArray(params) ? params : [];
-            const p = (i) => {
-                if (i >= safeParams.length) return '0';
-                return this.compileParam(safeParams[i]);
-            };
-            
-            // 드롭다운/필드 값 가져오기 (문자열로)
-            const f = (i) => {
-                if (i >= safeParams.length) return '';
-                const param = safeParams[i];
-                if (param === null || param === undefined) return '';
-                if (typeof param === 'string') return param;
-                if (typeof param === 'number') return String(param);
-                return '';
-            };
-            
-            // 제어 구조 블록은 별도 처리
-            switch (type) {
-                case 'repeat_basic':
-                    return this.compileRepeat(safeParams, statements, context);
-                case 'repeat_inf':
-                    return this.compileRepeatInf(statements, context);
-                case 'repeat_while_true':
-                    return this.compileRepeatWhile(safeParams, statements, context);
-                case '_if':
-                    return this.compileIf(safeParams, statements, context);
-                case 'if_else':
-                    return this.compileIfElse(safeParams, statements, context);
-                case 'calc_basic':
-                    return this.compileCalcBasic(safeParams);
-                case 'calc_operation':
-                    return this.compileCalcOperation(safeParams);
-                case 'boolean_basic_operator':
-                    return this.compileBooleanOperator(safeParams);
-                case 'boolean_and_or':
-                    return this.compileBooleanAndOr(safeParams);
-                case 'boolean_not':
-                    return `(!(${p(1)}))`;
+        /**
+         * Entry.block 스키마를 사용하여 파라미터 값 추출 코드 생성
+         */
+        getParam(block, paramName, schema) {
+            if (!schema?.paramsKeyMap) {
+                // 스키마 없으면 인덱스로 직접 접근 시도
+                const idx = typeof paramName === 'number' ? paramName : 0;
+                return this.compileParamValue(block.params?.[idx]);
             }
-            
-            // 일반 블록 매핑
-            switch (type) {
-                // 시작 블록들
-                case 'when_run_button_click': return '// start';
-                case 'when_some_key_pressed': return '// key event';
-                case 'when_object_click': return '// click event';
-                case 'when_message_cast': return '// message event';
-                case 'when_clone_start': return '// clone start';
-                case 'when_scene_start': return '// scene start';
-                
-                // 흐름
-                case 'wait_second': return `yield { type: 'wait', duration: ${p(0)} * 1000 };`;
-                case 'stop_repeat': return 'break;';
-                case 'stop_object': return 'return;';
-                case 'restart_project': return 'runtime.restart();';
-                case 'stop_all': return 'runtime.stopAll();';
-                
-                // 움직임
-                case 'move_direction': return `entity.move(${p(0)});`;
-                case 'move_x': return `entity.setX(entity.x + ${p(0)});`;
-                case 'move_y': return `entity.setY(entity.y + ${p(0)});`;
-                case 'locate_x': return `entity.setX(${p(0)});`;
-                case 'locate_y': return `entity.setY(${p(0)});`;
-                case 'locate_xy': return `entity.setX(${p(0)}); entity.setY(${p(1)});`;
-                case 'locate': return `entity.moveTo(${p(0)});`;
-                case 'locate_object_time': return `yield* runtime.glideToEntity(entity, ${p(0)}, ${p(1)});`;
-                case 'rotate_by_angle': return `entity.rotate(${p(0)});`;
-                case 'rotate_by_angle_dropdown': return `entity.rotate(${p(0)});`;
-                case 'direction_relative': return `entity.setDirection(entity.direction + ${p(0)});`;
-                case 'rotate_absolute': return `entity.setRotation(${p(0)});`;
-                case 'direction_absolute': return `entity.setDirection(${p(0)});`;
-                case 'see_angle_object': return `entity.lookAt(${p(0)});`;
-                case 'move_to_angle': return `entity.moveToAngle(${p(0)}, ${p(1)});`;
-                case 'rotate_by_angle_time': return `yield* runtime.rotateDuring(entity, ${p(0)}, ${p(1)});`;
-                case 'bounce_wall': return 'entity.bounceWall();';
-                case 'flip_arrow_horizontal': return 'entity.flipX();';
-                case 'flip_arrow_vertical': return 'entity.flipY();';
-                
-                // 형태
-                case 'show': return 'entity.setVisible(true);';
-                case 'hide': return 'entity.setVisible(false);';
-                case 'dialog_time': return `yield* runtime.sayForSecs(entity, ${p(0)}, ${p(1)});`;
-                case 'dialog': return `runtime.say(entity, ${p(0)});`;
-                case 'remove_dialog': return 'runtime.removeDialog(entity);';
-                case 'change_to_some_shape': return `entity.setCostumeByName(${p(0)});`;
-                case 'change_to_next_shape': return `entity.${f(0) === 'prev' ? 'prevCostume' : 'nextCostume'}();`;
-                case 'add_effect_amount': return `entity.addEffect('${f(0)}', ${p(1)});`;
-                case 'change_effect_amount': return `entity.setEffect('${f(0)}', ${p(1)});`;
-                case 'erase_all_effects': return 'entity.clearEffects();';
-                case 'change_scale_size': return `entity.setSize(entity.size + ${p(0)});`;
-                case 'set_scale_size': return `entity.setSize(${p(0)});`;
-                case 'flip_x': return 'entity.flipY();';
-                case 'flip_y': return 'entity.flipX();';
-                case 'change_object_index': return `entity.setZIndex('${f(0)}');`;
-                
-                // 소리 (다양한 소리 블록 지원)
-                case 'sound_something': return `runtime.playSound(entity, ${p(0)});`;
-                case 'sound_something_with_block': return `runtime.playSound(entity, ${p(0)});`;
-                case 'sound_something_second_with_block': return `runtime.playSoundForSec(entity, ${p(0)}, ${p(1)});`;
-                case 'sound_something_wait': return `yield* runtime.playSoundAndWait(entity, ${p(0)});`;
-                case 'sound_something_wait_with_block': return `yield* runtime.playSoundAndWait(entity, ${p(0)});`;
-                case 'sound_volume_change': return `runtime.changeVolume(${p(0)});`;
-                case 'sound_volume_set': return `runtime.setVolume(${p(0)});`;
-                case 'sound_silent_all': return 'runtime.stopAllSounds();';
-                case 'play_bgm': return `runtime.playBGM(entity, ${p(0)});`;
-                case 'stop_bgm': return 'runtime.stopBGM();';
-                
-                // 판단 (불리언 반환)
-                case 'is_clicked': return '(runtime.isMouseDown)';
-                case 'is_object_clicked': return '(runtime.isEntityClicked(entity))';
-                case 'is_press_some_key': return `(runtime.isKeyPressed(${p(0)}))`;
-                case 'reach_something': return `(entity.isTouching(${p(1)}))`;
-                case 'is_included_in_list': return `(runtime.listContains('${f(1)}', ${p(3)}))`;
-                case 'True': return 'true';
-                case 'False': return 'false';
-                
-                // 계산
-                case 'calc_rand': return `runtime.random(${p(1)}, ${p(3)})`;
-                case 'coordinate_mouse': return `runtime.mouse${f(1) === 'x' ? 'X' : 'Y'}`;
-                case 'coordinate_object': return `runtime.getObjectCoord(${p(1)}, '${f(3)}')`;
-                case 'quotient_and_mod': return `(${f(5) === 'MOD' ? `(${p(1)} % ${p(3)})` : `Math.floor(${p(1)} / ${p(3)})`})`;
-                case 'get_project_timer_value': return 'runtime.getTimer()';
-                case 'get_date': return `runtime.getDate('${f(1)}')`;
-                case 'distance_something': return `entity.distanceTo(${p(1)})`;
-                case 'length_of_string': return `String(${p(1)}).length`;
-                case 'combine_something': return `(String(${p(1)}) + String(${p(3)}))`;
-                case 'char_at': return `String(${p(1)}).charAt(${p(3)} - 1)`;
-                case 'substring': return `String(${p(1)}).substring(${p(3)} - 1, ${p(5)})`;
-                case 'index_of_string': return `(String(${p(1)}).indexOf(${p(3)}) + 1)`;
-                case 'replace_string': return `String(${p(1)}).split(${p(3)}).join(${p(5)})`;
-                case 'change_string_case': return `String(${p(1)}).${f(3) === 'toUpperCase' ? 'toUpperCase' : 'toLowerCase'}()`;
-                
-                // 변수
-                case 'set_variable': return `vars['${f(0)}'] = ${p(1)};`;
-                case 'change_variable': return `vars['${f(0)}'] = (Number(vars['${f(0)}']) || 0) + ${p(1)};`;
-                case 'get_variable': return `(vars['${f(0)}'] || 0)`;
-                case 'show_variable': return `runtime.showVariable('${f(0)}');`;
-                case 'hide_variable': return `runtime.hideVariable('${f(0)}');`;
-                
-                // 리스트
-                case 'add_value_to_list': return `(lists['${f(1)}'] || (lists['${f(1)}'] = [])).push(${p(0)});`;
-                case 'remove_value_from_list': return `(lists['${f(1)}'] || []).splice(${p(0)} - 1, 1);`;
-                case 'insert_value_to_list': return `(lists['${f(1)}'] || (lists['${f(1)}'] = [])).splice(${p(2)} - 1, 0, ${p(0)});`;
-                case 'change_value_list_index': return `if (lists['${f(0)}']) lists['${f(0)}'][${p(1)} - 1] = ${p(2)};`;
-                case 'value_of_index_from_list': return `((lists['${f(1)}'] || [])[${p(3)} - 1] || 0)`;
-                case 'length_of_list': return `(lists['${f(1)}'] || []).length`;
-                case 'show_list': return `runtime.showList('${f(0)}');`;
-                case 'hide_list': return `runtime.hideList('${f(0)}');`;
-                
-                // 붓
-                case 'start_drawing': return 'entity.startDrawing();';
-                case 'stop_drawing': return 'entity.stopDrawing();';
-                case 'set_color': return `entity.setBrushColor(${p(0)});`;
-                case 'set_thickness': return `entity.setBrushThickness(${p(0)});`;
-                case 'change_thickness': return `entity.changeBrushThickness(${p(0)});`;
-                case 'set_brush_tranparency': return `entity.setBrushOpacity(${p(0)});`;
-                case 'change_brush_transparency': return `entity.changeBrushOpacity(${p(0)});`;
-                case 'brush_erase_all': return 'runtime.clearCanvas();';
-                case 'brush_stamp': return 'entity.stamp();';
-                
-                // 신호
-                case 'message_cast': return `runtime.broadcast('${f(0)}');`;
-                case 'message_cast_wait': return `yield* runtime.broadcastAndWait('${f(0)}');`;
-                
-                // 복제
-                case 'create_clone': return `runtime.createClone('${f(0)}' === 'self' ? entity.id : '${f(0)}');`;
-                case 'delete_clone': return 'if (entity.isClone) { entity.destroy(); return; }';
-                
-                // 묻고 답하기
-                case 'ask_and_wait': return `yield* runtime.askAndWait(entity, ${p(0)});`;
-                case 'get_canvas_input_value': return 'runtime.getAnswer()';
-                
-                // 기본 값 블록들
-                case 'number': return p(0);
-                case 'text': return p(0);
-                case 'angle': return p(0);
-                case 'get_pictures': return p(0);
-                case 'get_sounds': return p(0);
-                case 'color': return p(0);
-                
-                default:
-                    if (this.debugMode) {
-                        console.log(`[BlockCompiler] Unknown block type: ${type}`, safeParams);
-                    }
-                    return `/* unknown: ${type} */`;
-            }
+
+            const index = schema.paramsKeyMap[paramName];
+            if (index === undefined) return '0';
+
+            return this.compileParamValue(block.params?.[index]);
         },
 
-        compileParam(param) {
+        /**
+         * 파라미터 값을 JavaScript 표현식으로 컴파일
+         */
+        compileParamValue(param) {
             if (param === null || param === undefined) return '0';
             if (typeof param === 'number') return String(param);
             if (typeof param === 'string') return JSON.stringify(param);
             if (typeof param === 'boolean') return String(param);
-            
-            // 배열인 경우 (statements) - 먼저 체크
-            if (Array.isArray(param)) {
-                return '0';
-            }
-            
-            // 중첩된 블록인 경우 (type 속성이 있음)
-            if (typeof param === 'object') {
-                if (param.type) {
-                    // 값 블록 (number, text 등 기본 타입)
-                    if (param.type === 'number' || param.type === 'text' || param.type === 'angle') {
-                        const val = param.params && param.params[0];
-                        if (val === null || val === undefined) return '0';
-                        if (typeof val === 'number') return String(val);
-                        return JSON.stringify(String(val));
-                    }
-                    
-                    // 다른 블록 타입인 경우 컴파일 시도
-                    const result = this.compileBlock(param, {});
-                    // 결과가 표현식이면 그대로 반환, 문장이면 0 반환
-                    if (result && !result.includes(';') && result.trim() !== '') {
-                        return result;
-                    }
-                    return '0';
+
+            // 중첩 블록인 경우
+            if (typeof param === 'object' && param.type) {
+                // 동적 파라미터 블록 확인
+                if (param.type.startsWith('stringParam_') || param.type.startsWith('booleanParam_')) {
+                    return `runtime.getFunctionParam(entity, '${param.type}')`;
                 }
-                // 기타 객체
-                try {
-                    return JSON.stringify(param);
-                } catch (e) {
-                    return '0';
-                }
+                return this.compileExpression(param);
             }
-            
+
             return '0';
         },
 
-        compileRepeat(params, statements, context) {
-            const count = this.compileParam(params[0]);
-            const body = this.compileStatements(statements[0] || [], context);
-            return `for (let _i = 0; _i < ${count}; _i++) { if (++_loopCount > 100000) { yield { type: 'tick' }; _loopCount = 0; }\n${body}\n}`;
-        },
+        /**
+         * 값을 반환하는 블록(표현식)을 컴파일
+         */
+        compileExpression(block) {
+            if (!block || !block.type) return '0';
 
-        compileRepeatInf(statements, context) {
-            const body = this.compileStatements(statements[0] || [], context);
-            return `while (true) { if (++_loopCount > 1000) { yield { type: 'tick' }; _loopCount = 0; }\n${body}\n}`;
-        },
+            const { type } = block;
+            const schema = typeof Entry !== 'undefined' ? Entry.block?.[type] : null;
 
-        compileRepeatWhile(params, statements, context) {
-            const condition = this.compileParam(params[0]);
-            const body = this.compileStatements(statements[0] || [], context);
-            return `while (${condition}) { if (++_loopCount > 100000) { yield { type: 'tick' }; _loopCount = 0; }\n${body}\n}`;
-        },
-
-        compileIf(params, statements, context) {
-            return `if (${this.compileParam(params[0])}) {\n${this.compileStatements(statements[0] || [], context)}\n}`;
-        },
-
-        compileIfElse(params, statements, context) {
-            const ifBody = this.compileStatements(statements[0] || [], context);
-            const elseBody = this.compileStatements(statements[1] || [], context);
-            return `if (${this.compileParam(params[0])}) {\n${ifBody}\n} else {\n${elseBody}\n}`;
-        },
-
-        compileStatements(blocks, context) {
-            return blocks.map(b => '  ' + this.compileBlock(b, context)).join('\n');
-        },
-
-        compileCalcBasic(params) {
-            const ops = { 'PLUS': '+', 'MINUS': '-', 'MULTI': '*', 'DIVIDE': '/' };
-            const op = (params[1] && typeof params[1] === 'string') ? params[1] : 'PLUS';
-            return `(${this.compileParam(params[0])} ${ops[op] || '+'} ${this.compileParam(params[2])})`;
-        },
-
-        compileCalcOperation(params) {
-            const v = this.compileParam(params[1]);
-            const op = (params[3] && typeof params[3] === 'string') ? params[3] : 'round';
-            const ops = {
-                'sin': `Math.sin(${v} * Math.PI / 180)`,
-                'cos': `Math.cos(${v} * Math.PI / 180)`,
-                'tan': `Math.tan(${v} * Math.PI / 180)`,
-                'asin_radian': `(Math.asin(${v}) * 180 / Math.PI)`,
-                'acos_radian': `(Math.acos(${v}) * 180 / Math.PI)`,
-                'atan_radian': `(Math.atan(${v}) * 180 / Math.PI)`,
-                'square': `(${v} * ${v})`,
-                'root': `Math.sqrt(${v})`,
-                'sqrt': `Math.sqrt(${v})`,
-                'abs': `Math.abs(${v})`,
-                'round': `Math.round(${v})`,
-                'floor': `Math.floor(${v})`,
-                'ceil': `Math.ceil(${v})`,
-                'ln': `Math.log(${v})`,
-                'log': `(Math.log(${v}) / Math.LN10)`,
-                'factorial': `runtime.factorial(${v})`,
-                'unnatural': `(${v} - Math.floor(${v}))`
-            };
-            return ops[op] || `Math.round(${v})`;
-        },
-        
-        compileBooleanOperator(params) {
-            const ops = { 'EQUAL': '===', 'NOT_EQUAL': '!==', 'GREATER': '>', 'LESS': '<', 'GREATER_OR_EQUAL': '>=', 'LESS_OR_EQUAL': '<=' };
-            const op = (params[1] && typeof params[1] === 'string') ? params[1] : 'EQUAL';
-            return `(${this.compileParam(params[0])} ${ops[op] || '==='} ${this.compileParam(params[2])})`;
-        },
-        
-        compileBooleanAndOr(params) {
-            const op = (params[1] === 'OR') ? '||' : '&&';
-            return `(${this.compileParam(params[0])} ${op} ${this.compileParam(params[2])})`;
-        },
-
-        createFunction(code, context) {
-            try {
-                return new Function(code)();
-            } catch (e) {
-                console.error('Compile error:', e);
-                return async function*() {};
+            // 기본 값 블록들
+            if (type === 'number' || type === 'text' || type === 'angle') {
+                const val = block.params?.[0];
+                if (val === null || val === undefined) return '0';
+                if (typeof val === 'number') return String(val);
+                return JSON.stringify(String(val));
             }
+
+            // 동적 파라미터 블록 확인
+            if (type.startsWith('stringParam_') || type.startsWith('booleanParam_')) {
+                return `runtime.getFunctionParam(entity, '${type}')`;
+            }
+            
+            // 동적 함수 값 블록 확인 (func_XXXX 값 반환형)
+            if (type.startsWith('func_')) {
+                const funcId = type.replace('func_', '');
+                const params = (block.params || []).filter(p => p && typeof p === 'object' && p.type);
+                const compiledParams = params.map(p => this.compileExpression(p)).join(', ');
+                return `(yield* runtime.callFunctionValue('${funcId}', entity, [${compiledParams}]))`;
+            }
+
+            // 표현식 컴파일러 확인
+            const exprCompiler = this.expressionCompilers[type];
+            if (exprCompiler) {
+                try {
+                    return exprCompiler.call(this, block, schema);
+                } catch (e) {
+                    if (this.debug) console.warn(`[TurboCompiler] Failed to compile expression ${type}:`, e);
+                }
+            }
+
+            // 폴백: 0 반환
+            console.warn('[TurboCompiler] Unknown expression:', type);
+            return '0';
+        },
+
+        /**
+         * statements 컴파일 (if/반복문 내부)
+         */
+        compileStatements(block, statementName, schema) {
+            if (!schema?.statementsKeyMap) {
+                const idx = typeof statementName === 'number' ? statementName : 0;
+                const statements = block.statements?.[idx];
+                return statements ? this.compileBlocks(statements) : '';
+            }
+
+            const index = schema.statementsKeyMap[statementName];
+            if (index === undefined) return '';
+
+            const statements = block.statements?.[index];
+            return statements ? this.compileBlocks(statements) : '';
+        },
+
+        /**
+         * 지원하지 않는 블록 → 건너뛰기 (경고만 출력)
+         */
+        compileFallback(block, type) {
+            // 함수 블록 등 복잡한 블록은 현재 지원하지 않음
+            return `console.warn('[TurboCompiler] Unsupported block skipped:', '${type}');`;
+        },
+
+        /**
+         * 폴백 스레드 생성 (컴파일 실패 시)
+         */
+        createFallbackThread(blocks) {
+            return async function*(entity, runtime) {
+                for (const block of blocks) {
+                    yield* runtime.executeEntryBlock(block, entity);
+                }
+            };
+        },
+
+        // ============================================================
+        // 블록 컴파일러 정의
+        // ============================================================
+
+        blockCompilers: {
+            // === 시작 블록들 (이벤트 트리거) ===
+            'when_run_button_click': () => '// start event',
+            'when_some_key_pressed': () => '// key event',
+            'when_object_click': () => '// click event',
+            'when_object_click_canceled': () => '// click cancel event',
+            'when_message_cast': () => '// message event',
+            'when_clone_start': () => '// clone start',
+            'when_scene_start': () => '// scene start',
+
+            // === 흐름 제어 ===
+            'wait_second': function(block, schema) {
+                const sec = this.getParam(block, 'SECOND', schema);
+                return `yield { type: 'wait', duration: (${sec}) * 1000 };`;
+            },
+
+            'repeat_basic': function(block, schema) {
+                const count = this.getParam(block, 'VALUE', schema);
+                const body = this.compileStatements(block, 'DO', schema);
+                return `
+                    for (let _i = 0, _max = Math.floor(${count}); _i < _max; _i++) {
+                        ${body}
+                        yield { type: 'tick' };
+                    }
+                `;
+            },
+
+            'repeat_inf': function(block, schema) {
+                const body = this.compileStatements(block, 'DO', schema);
+                return `
+                    while (true) {
+                        ${body}
+                        yield { type: 'tick' };
+                    }
+                `;
+            },
+
+            'repeat_while_true': function(block, schema) {
+                const condition = this.getParam(block, 'BOOL', schema);
+                const body = this.compileStatements(block, 'DO', schema);
+                return `
+                    while (${condition}) {
+                        ${body}
+                        yield { type: 'tick' };
+                    }
+                `;
+            },
+
+            '_if': function(block, schema) {
+                const condition = this.getParam(block, 'BOOL', schema);
+                const body = this.compileStatements(block, 'DO', schema);
+                return `if (${condition}) { ${body} }`;
+            },
+
+            'if_else': function(block, schema) {
+                const condition = this.getParam(block, 'BOOL', schema);
+                const ifBody = this.compileStatements(block, 'DO', schema);
+                const elseBody = this.compileStatements(block, 'ELSE', schema);
+                return `if (${condition}) { ${ifBody} } else { ${elseBody} }`;
+            },
+
+            'stop_repeat': () => 'break;',
+            'stop_object': () => 'return;',
+            'restart_project': () => 'runtime.restartProject();',
+            'stop_all': () => 'runtime.stopAll();',
+
+            // === 움직임 ===
+            'move_direction': function(block, schema) {
+                const value = this.getParam(block, 'VALUE', schema);
+                return `entity.setX(entity.getX() + (${value}) * Math.cos((entity.getDirection() - 90) * Math.PI / 180));
+                        entity.setY(entity.getY() + (${value}) * Math.sin((entity.getDirection() - 90) * Math.PI / 180));`;
+            },
+
+            'move_x': function(block, schema) {
+                const value = this.getParam(block, 'VALUE', schema);
+                return `entity.setX(entity.getX() + (${value}));`;
+            },
+
+            'move_y': function(block, schema) {
+                const value = this.getParam(block, 'VALUE', schema);
+                return `entity.setY(entity.getY() + (${value}));`;
+            },
+
+            'locate_x': function(block, schema) {
+                const value = this.getParam(block, 'VALUE', schema);
+                return `entity.setX(${value});`;
+            },
+
+            'locate_y': function(block, schema) {
+                const value = this.getParam(block, 'VALUE', schema);
+                return `entity.setY(${value});`;
+            },
+
+            'locate_xy': function(block, schema) {
+                const x = this.getParam(block, 'VALUE1', schema);
+                const y = this.getParam(block, 'VALUE2', schema);
+                return `entity.setX(${x}); entity.setY(${y});`;
+            },
+
+            'locate_xy_time': function(block, schema) {
+                const sec = this.getParam(block, 'VALUE1', schema);
+                const x = this.getParam(block, 'VALUE2', schema);
+                const y = this.getParam(block, 'VALUE3', schema);
+                return `yield* runtime.glide(entity, ${x}, ${y}, ${sec});`;
+            },
+
+            'rotate_by_angle': function(block, schema) {
+                const angle = this.getParam(block, 'VALUE', schema);
+                return `entity.setRotation(entity.getRotation() + (${angle}));`;
+            },
+
+            'direction_relative': function(block, schema) {
+                const angle = this.getParam(block, 'VALUE', schema);
+                return `entity.setDirection(entity.getDirection() + (${angle}));`;
+            },
+
+            'rotate_absolute': function(block, schema) {
+                const angle = this.getParam(block, 'VALUE', schema);
+                return `entity.setRotation(${angle});`;
+            },
+
+            'direction_absolute': function(block, schema) {
+                const angle = this.getParam(block, 'VALUE', schema);
+                return `entity.setDirection(${angle});`;
+            },
+
+            'see_angle_object': function(block, schema) {
+                const targetId = this.getParam(block, 'VALUE', schema);
+                return `runtime.lookAt(entity, ${targetId});`;
+            },
+
+            'move_to_angle': function(block, schema) {
+                const angle = this.getParam(block, 'VALUE1', schema);
+                const dist = this.getParam(block, 'VALUE2', schema);
+                return `entity.setX(entity.getX() + (${dist}) * Math.cos(((${angle}) - 90) * Math.PI / 180));
+                        entity.setY(entity.getY() + (${dist}) * Math.sin(((${angle}) - 90) * Math.PI / 180));`;
+            },
+
+            'locate': function(block, schema) {
+                const targetId = this.getParam(block, 'VALUE', schema);
+                return `runtime.locateTo(entity, ${targetId});`;
+            },
+
+            'bounce_wall': () => `runtime.bounceWall(entity);`,
+
+            // === 형태 ===
+            'show': () => 'entity.setVisible(true);',
+            'hide': () => 'entity.setVisible(false);',
+
+            'dialog': function(block, schema) {
+                const text = this.getParam(block, 'VALUE', schema);
+                const type = block.params?.[1] || 'speak';
+                return `runtime.showDialog(entity, ${text}, '${type}');`;
+            },
+
+            'dialog_time': function(block, schema) {
+                const text = this.getParam(block, 'VALUE', schema);
+                const sec = this.getParam(block, 'SECOND', schema);
+                const type = block.params?.[2] || 'speak';
+                return `runtime.showDialog(entity, ${text}, '${type}'); yield { type: 'wait', duration: (${sec}) * 1000 }; runtime.removeDialog(entity);`;
+            },
+
+            'remove_dialog': () => 'runtime.removeDialog(entity);',
+
+            'change_to_some_shape': function(block, schema) {
+                const picture = this.getParam(block, 'VALUE', schema);
+                return `runtime.setCostume(entity, ${picture});`;
+            },
+
+            'change_to_next_shape': function(block, schema) {
+                const dir = block.params?.[0];
+                return dir === 'prev' ? 'entity.prevPicture();' : 'entity.nextPicture();';
+            },
+
+            'set_effect_amount': function(block, schema) {
+                const effect = block.params?.[0];
+                const value = this.getParam(block, 'VALUE', schema);
+                return `entity.setEffect('${effect}', ${value});`;
+            },
+
+            'change_effect_amount': function(block, schema) {
+                const effect = block.params?.[0];
+                const value = this.getParam(block, 'VALUE', schema);
+                return `entity.setEffect('${effect}', entity.getEffect('${effect}') + (${value}));`;
+            },
+
+            'erase_all_effects': () => 'entity.resetFilter();',
+
+            'change_scale_size': function(block, schema) {
+                const value = this.getParam(block, 'VALUE', schema);
+                return `entity.setSize(entity.getSize() + (${value}));`;
+            },
+
+            'set_scale_size': function(block, schema) {
+                const value = this.getParam(block, 'VALUE', schema);
+                return `entity.setSize(${value});`;
+            },
+
+            // === 소리 ===
+            'sound_something': function(block, schema) {
+                const sound = this.getParam(block, 'VALUE', schema);
+                return `runtime.playSound(entity, ${sound});`;
+            },
+
+            'sound_something_wait': function(block, schema) {
+                const sound = this.getParam(block, 'VALUE', schema);
+                return `yield* runtime.playSoundWait(entity, ${sound});`;
+            },
+
+            'sound_volume_set': function(block, schema) {
+                const value = this.getParam(block, 'VALUE', schema);
+                return `runtime.setVolume(${value});`;
+            },
+
+            'sound_volume_change': function(block, schema) {
+                const value = this.getParam(block, 'VALUE', schema);
+                return `runtime.changeVolume(${value});`;
+            },
+
+            'sound_silent_all': () => 'runtime.stopAllSounds();',
+
+            // === 변수 ===
+            'set_variable': function(block, schema) {
+                const varId = block.params?.[0];
+                const value = this.getParam(block, 'VALUE', schema);
+                return `runtime.setVariable('${varId}', ${value});`;
+            },
+
+            'change_variable': function(block, schema) {
+                const varId = block.params?.[0];
+                const value = this.getParam(block, 'VALUE', schema);
+                return `runtime.changeVariable('${varId}', ${value});`;
+            },
+
+            'show_variable': function(block) {
+                const varId = block.params?.[0];
+                return `runtime.showVariable('${varId}');`;
+            },
+
+            'hide_variable': function(block) {
+                const varId = block.params?.[0];
+                return `runtime.hideVariable('${varId}');`;
+            },
+
+            // === 리스트 ===
+            'add_value_to_list': function(block, schema) {
+                const value = this.getParam(block, 'VALUE', schema);
+                const listId = block.params?.[1];
+                return `runtime.addToList('${listId}', ${value});`;
+            },
+
+            'remove_value_from_list': function(block, schema) {
+                const index = this.getParam(block, 'VALUE', schema);
+                const listId = block.params?.[1];
+                return `runtime.removeFromList('${listId}', ${index});`;
+            },
+
+            // === 신호 ===
+            'message_cast': function(block) {
+                const msgId = block.params?.[0];
+                return `runtime.broadcast('${msgId}');`;
+            },
+
+            'message_cast_wait': function(block) {
+                const msgId = block.params?.[0];
+                return `yield* runtime.broadcastWait('${msgId}');`;
+            },
+
+            // === 복제 ===
+            'create_clone': function(block) {
+                const targetId = block.params?.[0];
+                return `runtime.createClone(entity, '${targetId}');`;
+            },
+
+            'delete_clone': () => `if (entity.isClone) { runtime.removeClone(entity); return; }`,
+
+            // === 붓 ===
+            'start_drawing': () => 'runtime.startDrawing(entity);',
+            'stop_drawing': () => 'runtime.stopDrawing(entity);',
+            
+            'set_color': function(block, schema) {
+                const color = this.getParam(block, 'VALUE', schema);
+                return `runtime.setBrushColor(entity, ${color});`;
+            },
+
+            'set_thickness': function(block, schema) {
+                const value = this.getParam(block, 'VALUE', schema);
+                return `runtime.setBrushThickness(entity, ${value});`;
+            },
+            
+            'change_thickness': function(block, schema) {
+                const value = this.getParam(block, 'VALUE', schema);
+                return `runtime.changeBrushThickness(entity, ${value});`;
+            },
+            
+            'set_brush_tranparency': function(block, schema) {
+                const value = this.getParam(block, 'VALUE', schema);
+                return `runtime.setBrushTransparency(entity, ${value});`;
+            },
+            
+            'change_brush_transparency': function(block, schema) {
+                const value = this.getParam(block, 'VALUE', schema);
+                return `runtime.changeBrushTransparency(entity, ${value});`;
+            },
+            
+            'set_random_color': () => 'runtime.setRandomBrushColor(entity);',
+
+            'brush_erase_all': () => 'runtime.clearBrush(entity);',
+            'brush_stamp': () => 'runtime.stamp(entity);',
+            
+            // === 타이머 ===
+            'choose_project_timer_action': function(block, schema) {
+                const action = block.params?.[0];
+                return `runtime.timerAction('${action}');`;
+            },
+            
+            'set_visible_project_timer': function(block, schema) {
+                const visible = block.params?.[0];
+                return `runtime.setTimerVisible('${visible}');`;
+            },
+
+            // === 묻고 답하기 ===
+            'ask_and_wait': function(block, schema) {
+                const question = this.getParam(block, 'VALUE', schema);
+                return `yield* runtime.askAndWait(entity, ${question});`;
+            },
+        },
+
+        /**
+         * 함수 블록 동적 컴파일러 등록
+         * func_XXXX 형태의 사용자 정의 함수 블록 처리
+         */
+        getFunctionCompiler(type) {
+            // func_ 로 시작하는 블록은 함수 호출
+            if (!type.startsWith('func_')) return null;
+            
+            return function(block, schema) {
+                const funcId = type.replace('func_', '');
+                // 함수 블록의 파라미터들을 컴파일
+                const params = (block.params || []).filter(p => p && typeof p === 'object' && p.type);
+                const compiledParams = params.map(p => this.compileExpression(p)).join(', ');
+                
+                return `yield* runtime.callFunction('${funcId}', entity, [${compiledParams}]);`;
+            };
+        },
+
+        // ============================================================
+        // 표현식(값 블록) 컴파일러
+        // ============================================================
+
+        expressionCompilers: {
+            // 기본 값
+            'number': (block) => block.params?.[0] ?? 0,
+            'text': (block) => JSON.stringify(block.params?.[0] ?? ''),
+            'angle': (block) => block.params?.[0] ?? 0,
+            'True': () => 'true',
+            'False': () => 'false',
+
+            // 변수/리스트
+            'get_variable': function(block) {
+                const varId = block.params?.[0];
+                return `runtime.getVariable('${varId}')`;
+            },
+
+            'value_of_index_from_list': function(block, schema) {
+                const listId = block.params?.[1];
+                const index = this.getParam(block, 'VALUE', schema);
+                return `runtime.getListItem('${listId}', ${index})`;
+            },
+
+            'length_of_list': function(block) {
+                const listId = block.params?.[1];
+                return `runtime.getListLength('${listId}')`;
+            },
+
+            // 계산
+            'calc_basic': function(block, schema) {
+                const left = this.compileParamValue(block.params?.[0]);
+                const op = block.params?.[1];
+                const right = this.compileParamValue(block.params?.[2]);
+                const ops = { 'PLUS': '+', 'MINUS': '-', 'MULTI': '*', 'DIVIDE': '/' };
+                return `((${left}) ${ops[op] || '+'} (${right}))`;
+            },
+
+            'calc_rand': function(block, schema) {
+                const min = this.compileParamValue(block.params?.[1]);
+                const max = this.compileParamValue(block.params?.[3]);
+                return `runtime.random(${min}, ${max})`;
+            },
+
+            'calc_operation': function(block, schema) {
+                const value = this.compileParamValue(block.params?.[1]);
+                const op = block.params?.[3];
+                const ops = {
+                    'sin': `Math.sin((${value}) * Math.PI / 180)`,
+                    'cos': `Math.cos((${value}) * Math.PI / 180)`,
+                    'tan': `Math.tan((${value}) * Math.PI / 180)`,
+                    'asin_radian': `(Math.asin(${value}) * 180 / Math.PI)`,
+                    'acos_radian': `(Math.acos(${value}) * 180 / Math.PI)`,
+                    'atan_radian': `(Math.atan(${value}) * 180 / Math.PI)`,
+                    'square': `((${value}) * (${value}))`,
+                    'root': `Math.sqrt(${value})`,
+                    'abs': `Math.abs(${value})`,
+                    'round': `Math.round(${value})`,
+                    'floor': `Math.floor(${value})`,
+                    'ceil': `Math.ceil(${value})`,
+                    'ln': `Math.log(${value})`,
+                    'log': `(Math.log(${value}) / Math.LN10)`,
+                };
+                return ops[op] || `Math.round(${value})`;
+            },
+
+            'quotient_and_mod': function(block, schema) {
+                const left = this.compileParamValue(block.params?.[1]);
+                const right = this.compileParamValue(block.params?.[3]);
+                const op = block.params?.[5];
+                return op === 'MOD' 
+                    ? `((${left}) % (${right}))`
+                    : `Math.floor((${left}) / (${right}))`;
+            },
+
+            // 판단
+            'boolean_basic_operator': function(block, schema) {
+                const left = this.compileParamValue(block.params?.[0]);
+                const op = block.params?.[1];
+                const right = this.compileParamValue(block.params?.[2]);
+                const ops = { 
+                    'EQUAL': '==', 'NOT_EQUAL': '!=', 
+                    'GREATER': '>', 'LESS': '<',
+                    'GREATER_OR_EQUAL': '>=', 'LESS_OR_EQUAL': '<='
+                };
+                return `((${left}) ${ops[op] || '=='} (${right}))`;
+            },
+
+            'boolean_and_or': function(block, schema) {
+                const left = this.compileParamValue(block.params?.[0]);
+                const op = block.params?.[1];
+                const right = this.compileParamValue(block.params?.[2]);
+                return `((${left}) ${op === 'OR' ? '||' : '&&'} (${right}))`;
+            },
+
+            'boolean_not': function(block, schema) {
+                const value = this.compileParamValue(block.params?.[1]);
+                return `(!(${value}))`;
+            },
+
+            // 좌표/속성
+            'coordinate_mouse': function(block) {
+                const coord = block.params?.[1];
+                return coord === 'x' ? 'runtime.mouseX' : 'runtime.mouseY';
+            },
+
+            'coordinate_object': function(block, schema) {
+                const targetId = this.compileParamValue(block.params?.[1]);
+                const coord = block.params?.[3];
+                return `runtime.getObjectCoord(${targetId}, '${coord}')`;
+            },
+
+            'is_press_some_key': function(block, schema) {
+                const keyCode = this.compileParamValue(block.params?.[1]);
+                return `runtime.isKeyPressed(${keyCode})`;
+            },
+
+            'is_clicked': () => 'runtime.isMouseDown',
+
+            'reach_something': function(block, schema) {
+                const targetId = this.compileParamValue(block.params?.[1]);
+                return `runtime.isTouching(entity, ${targetId})`;
+            },
+
+            // 문자열
+            'length_of_string': function(block, schema) {
+                const str = this.compileParamValue(block.params?.[1]);
+                return `String(${str}).length`;
+            },
+
+            'combine_something': function(block, schema) {
+                const str1 = this.compileParamValue(block.params?.[1]);
+                const str2 = this.compileParamValue(block.params?.[3]);
+                return `(String(${str1}) + String(${str2}))`;
+            },
+
+            'char_at': function(block, schema) {
+                const str = this.compileParamValue(block.params?.[1]);
+                const index = this.compileParamValue(block.params?.[3]);
+                return `String(${str}).charAt((${index}) - 1)`;
+            },
+
+            // 타이머
+            'get_project_timer_value': () => 'runtime.getTimer()',
+            'get_canvas_input_value': () => 'runtime.getAnswer()',
         },
 
         clearCache() {
@@ -391,1002 +721,844 @@
     };
 
     // ============================================================
-    // TurboRenderer - 고성능 렌더러
+    // TurboRuntime - 컴파일된 코드 실행 런타임
     // ============================================================
-    
-    class TurboRenderer {
-        constructor(canvas) {
-            this.canvas = canvas;
-            this.ctx = canvas.getContext('2d', { alpha: false });
-            this.textureCache = new Map();
-            this.spriteBatch = [];
+
+    class TurboRuntime {
+        constructor() {
+            this.entities = new Map();
+            this.executors = [];
+            this.variables = {};
+            this.lists = {};
+            this.clones = [];
             
-            this.penCanvas = document.createElement('canvas');
-            this.penCanvas.width = canvas.width;
-            this.penCanvas.height = canvas.height;
-            this.penCtx = this.penCanvas.getContext('2d');
+            this.mouseX = 0;
+            this.mouseY = 0;
+            this.isMouseDown = false;
+            this.pressedKeys = new Set();
+            this.answer = '';
             
-            this.dialogCanvas = document.createElement('canvas');
-            this.dialogCanvas.width = canvas.width;
-            this.dialogCanvas.height = canvas.height;
-            this.dialogCtx = this.dialogCanvas.getContext('2d');
+            this.timerStart = 0;
+            this.running = false;
         }
 
-        async loadTexture(url) {
-            if (this.textureCache.has(url)) {
-                return this.textureCache.get(url);
+        // === 변수/리스트 ===
+        getVariable(id) {
+            if (typeof Entry !== 'undefined' && Entry.variableContainer) {
+                const v = Entry.variableContainer.getVariable(id);
+                return v ? v.getValue() : 0;
             }
-            
-            return new Promise((resolve, reject) => {
-                const img = new Image();
-                img.crossOrigin = 'anonymous';
-                img.onload = () => {
-                    const info = { image: img, width: img.width, height: img.height };
-                    this.textureCache.set(url, info);
-                    resolve(info);
-                };
-                img.onerror = reject;
-                img.src = url;
-            });
+            return this.variables[id] ?? 0;
         }
 
-        beginFrame() {
-            this.spriteBatch = [];
-            this.ctx.fillStyle = '#ffffff';
-            this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-        }
-
-        addSprite(sprite) {
-            this.spriteBatch.push(sprite);
-        }
-
-        endFrame() {
-            this.spriteBatch.sort((a, b) => (a.zIndex || 0) - (b.zIndex || 0));
-            
-            for (const sprite of this.spriteBatch) {
-                if (!sprite.visible || !sprite.textureInfo) continue;
-                
-                const tex = sprite.textureInfo;
-                const ctx = this.ctx;
-                
-                ctx.save();
-                ctx.translate(this.canvas.width / 2 + sprite.x, this.canvas.height / 2 - sprite.y);
-                ctx.rotate(-sprite.rotation * Math.PI / 180);
-                ctx.scale(sprite.scaleX, sprite.scaleY);
-                ctx.globalAlpha = 1 - (sprite.ghost || 0) / 100;
-                
-                if (sprite.brightness) {
-                    ctx.filter = `brightness(${100 + sprite.brightness}%)`;
-                }
-                
-                ctx.drawImage(tex.image, -tex.width / 2, -tex.height / 2, tex.width, tex.height);
-                ctx.restore();
+        setVariable(id, value) {
+            if (typeof Entry !== 'undefined' && Entry.variableContainer) {
+                const v = Entry.variableContainer.getVariable(id);
+                if (v) v.setValue(value);
             }
-            
-            this.ctx.drawImage(this.penCanvas, 0, 0);
-            this.ctx.drawImage(this.dialogCanvas, 0, 0);
+            this.variables[id] = value;
         }
 
-        drawPenLine(x1, y1, x2, y2, color, thickness) {
-            const ctx = this.penCtx;
-            const cx = this.penCanvas.width / 2;
-            const cy = this.penCanvas.height / 2;
-            
-            ctx.strokeStyle = color;
-            ctx.lineWidth = thickness;
-            ctx.lineCap = 'round';
-            ctx.beginPath();
-            ctx.moveTo(cx + x1, cy - y1);
-            ctx.lineTo(cx + x2, cy - y2);
-            ctx.stroke();
+        changeVariable(id, delta) {
+            this.setVariable(id, (Number(this.getVariable(id)) || 0) + Number(delta));
         }
 
-        clearPen() {
-            this.penCtx.clearRect(0, 0, this.penCanvas.width, this.penCanvas.height);
-        }
-
-        stamp(sprite) {
-            if (!sprite.textureInfo) return;
-            const ctx = this.penCtx;
-            const tex = sprite.textureInfo;
-            
-            ctx.save();
-            ctx.translate(this.penCanvas.width / 2 + sprite.x, this.penCanvas.height / 2 - sprite.y);
-            ctx.rotate(-sprite.rotation * Math.PI / 180);
-            ctx.scale(sprite.scaleX, sprite.scaleY);
-            ctx.globalAlpha = 1 - (sprite.ghost || 0) / 100;
-            ctx.drawImage(tex.image, -tex.width / 2, -tex.height / 2);
-            ctx.restore();
-        }
-
-        renderDialog(entity, text) {
-            const ctx = this.dialogCtx;
-            ctx.clearRect(0, 0, this.dialogCanvas.width, this.dialogCanvas.height);
-            if (!text) return;
-            
-            const x = this.dialogCanvas.width / 2 + entity.x;
-            const y = this.dialogCanvas.height / 2 - entity.y - 50;
-            
-            ctx.font = '14px sans-serif';
-            const textWidth = ctx.measureText(text).width;
-            const boxWidth = textWidth + 20;
-            const boxHeight = 30;
-            
-            ctx.fillStyle = '#ffffff';
-            ctx.strokeStyle = '#000000';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.roundRect(x - boxWidth/2, y - boxHeight, boxWidth, boxHeight, 8);
-            ctx.fill();
-            ctx.stroke();
-            
-            ctx.fillStyle = '#000000';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText(text, x, y - boxHeight/2);
-        }
-
-        clearDialog() {
-            this.dialogCtx.clearRect(0, 0, this.dialogCanvas.width, this.dialogCanvas.height);
-        }
-
-        resize(width, height) {
-            this.canvas.width = width;
-            this.canvas.height = height;
-            this.penCanvas.width = width;
-            this.penCanvas.height = height;
-            this.dialogCanvas.width = width;
-            this.dialogCanvas.height = height;
-        }
-
-        destroy() {
-            this.textureCache.clear();
-        }
-    }
-
-    // ============================================================
-    // TurboEntity - 최적화된 엔티티
-    // ============================================================
-    
-    class TurboEntity {
-        constructor(runtime, data) {
-            this.runtime = runtime;
-            this.id = data.id;
-            this.name = data.name;
-            
-            this.x = 0;
-            this.y = 0;
-            this.rotation = 0;
-            this.direction = 90;
-            this.scaleX = 1;
-            this.scaleY = 1;
-            this.size = 100;
-            this.visible = true;
-            this.zIndex = 0;
-            this.ghost = 0;
-            this.brightness = 0;
-            
-            this.costumes = [];
-            this.currentCostumeIndex = 0;
-            this.textureInfo = null;
-            
-            this.penDown = false;
-            this.penColor = '#000000';
-            this.penThickness = 1;
-            this.lastPenX = 0;
-            this.lastPenY = 0;
-            
-            this.dialog = null;
-            this.isClone = false;
-            this.initialState = null;
-            
-            if (data.entity) {
-                const e = data.entity;
-                this.x = e.x || 0;
-                this.y = e.y || 0;
-                this.rotation = e.rotation || 0;
-                this.direction = e.direction || 90;
-                this.scaleX = e.scaleX || 1;
-                this.scaleY = e.scaleY || 1;
-                this.visible = e.visible !== false;
+        getListItem(id, index) {
+            if (typeof Entry !== 'undefined' && Entry.variableContainer) {
+                const list = Entry.variableContainer.getList(id);
+                if (list) return list.getValueByIndex(index - 1) ?? 0;
             }
-            
-            this.saveInitialState();
+            return (this.lists[id] || [])[index - 1] ?? 0;
         }
 
-        saveInitialState() {
-            this.initialState = {
-                x: this.x, y: this.y, rotation: this.rotation,
-                direction: this.direction, scaleX: this.scaleX, scaleY: this.scaleY,
-                visible: this.visible, ghost: this.ghost, brightness: this.brightness,
-                currentCostumeIndex: this.currentCostumeIndex
-            };
-        }
-
-        reset() {
-            if (this.initialState) {
-                Object.assign(this, this.initialState);
-                this.setCostume(this.initialState.currentCostumeIndex);
+        getListLength(id) {
+            if (typeof Entry !== 'undefined' && Entry.variableContainer) {
+                const list = Entry.variableContainer.getList(id);
+                if (list) return list.length();
             }
-            this.penDown = false;
-            this.dialog = null;
+            return (this.lists[id] || []).length;
         }
 
-        setX(x) {
-            if (this.penDown) this.drawPen(x, this.y);
-            this.x = x;
+        addToList(id, value) {
+            if (typeof Entry !== 'undefined' && Entry.variableContainer) {
+                const list = Entry.variableContainer.getList(id);
+                if (list) list.appendValue(value);
+            }
+            if (!this.lists[id]) this.lists[id] = [];
+            this.lists[id].push(value);
         }
 
-        setY(y) {
-            if (this.penDown) this.drawPen(this.x, y);
-            this.y = y;
+        removeFromList(id, index) {
+            if (typeof Entry !== 'undefined' && Entry.variableContainer) {
+                const list = Entry.variableContainer.getList(id);
+                if (list) list.deleteValueByIndex(index - 1);
+            }
+            if (this.lists[id]) this.lists[id].splice(index - 1, 1);
         }
 
-        move(distance) {
-            const rad = (this.direction - 90) * Math.PI / 180;
-            this.setX(this.x + distance * Math.cos(rad));
-            this.setY(this.y + distance * Math.sin(rad));
+        showVariable(id) {
+            if (typeof Entry !== 'undefined' && Entry.variableContainer) {
+                const v = Entry.variableContainer.getVariable(id);
+                if (v) v.setVisible(true);
+            }
         }
 
-        moveTo(targetId) {
+        hideVariable(id) {
+            if (typeof Entry !== 'undefined' && Entry.variableContainer) {
+                const v = Entry.variableContainer.getVariable(id);
+                if (v) v.setVisible(false);
+            }
+        }
+
+        // === 유틸리티 ===
+        random(min, max) {
+            min = Number(min); max = Number(max);
+            if (min > max) [min, max] = [max, min];
+            if (Number.isInteger(min) && Number.isInteger(max)) {
+                return Math.floor(Math.random() * (max - min + 1)) + min;
+            }
+            return Math.random() * (max - min) + min;
+        }
+
+        isKeyPressed(keyCode) {
+            return this.pressedKeys.has(Number(keyCode));
+        }
+
+        getTimer() {
+            return (performance.now() - this.timerStart) / 1000;
+        }
+
+        getAnswer() {
+            if (typeof Entry !== 'undefined' && Entry.container) {
+                return Entry.container.getInputValue() ?? '';
+            }
+            return this.answer;
+        }
+
+        // === 움직임/형태 ===
+        locateTo(entity, targetId) {
             if (targetId === 'mouse') {
-                this.setX(this.runtime.mouseX);
-                this.setY(this.runtime.mouseY);
+                entity.setX(this.mouseX);
+                entity.setY(this.mouseY);
             } else {
-                const target = this.runtime.objects.get(targetId);
+                const target = this.findEntity(targetId);
                 if (target) {
-                    this.setX(target.x);
-                    this.setY(target.y);
+                    entity.setX(target.getX());
+                    entity.setY(target.getY());
                 }
             }
         }
 
-        moveToAngle(angle, distance) {
-            const rad = (angle - 90) * Math.PI / 180;
-            this.setX(this.x + distance * Math.cos(rad));
-            this.setY(this.y + distance * Math.sin(rad));
-        }
-
-        rotate(angle) { this.rotation = (this.rotation + angle) % 360; }
-        setRotation(r) { this.rotation = r % 360; }
-        setDirection(d) { this.direction = d % 360; }
-        setVisible(v) { this.visible = v; }
-        
-        setSize(size) {
-            const scale = size / this.size;
-            this.scaleX *= scale;
-            this.scaleY *= scale;
-            this.size = size;
-        }
-
-        setCostume(index) {
-            if (index >= 0 && index < this.costumes.length) {
-                this.currentCostumeIndex = index;
-                this.textureInfo = this.costumes[index].textureInfo;
+        lookAt(entity, targetId) {
+            let tx, ty;
+            if (targetId === 'mouse') {
+                tx = this.mouseX; ty = this.mouseY;
+            } else {
+                const target = this.findEntity(targetId);
+                if (!target) return;
+                tx = target.getX(); ty = target.getY();
             }
+            const dx = tx - entity.getX();
+            const dy = ty - entity.getY();
+            entity.setDirection(Math.atan2(dy, dx) * 180 / Math.PI + 90);
         }
 
-        nextCostume() { this.setCostume((this.currentCostumeIndex + 1) % this.costumes.length); }
-        prevCostume() { this.setCostume((this.currentCostumeIndex - 1 + this.costumes.length) % this.costumes.length); }
-
-        setEffect(effect, value) {
-            if (effect === 'ghost') this.ghost = Math.max(0, Math.min(100, value));
-            else if (effect === 'brightness') this.brightness = Math.max(-100, Math.min(100, value));
+        *glide(entity, x, y, duration) {
+            const startX = entity.getX(), startY = entity.getY();
+            const startTime = performance.now();
+            const endTime = startTime + duration * 1000;
+            
+            while (performance.now() < endTime) {
+                const progress = (performance.now() - startTime) / (duration * 1000);
+                entity.setX(startX + (x - startX) * progress);
+                entity.setY(startY + (y - startY) * progress);
+                yield { type: 'tick' };
+            }
+            entity.setX(x); entity.setY(y);
         }
 
-        addEffect(effect, value) {
-            if (effect === 'ghost') this.ghost = Math.max(0, Math.min(100, this.ghost + value));
-            else if (effect === 'brightness') this.brightness = Math.max(-100, Math.min(100, this.brightness + value));
+        bounceWall(entity) {
+            const x = entity.getX(), y = entity.getY();
+            const dir = entity.getDirection();
+            
+            if (x > 240 || x < -240) entity.setDirection(180 - dir);
+            if (y > 180 || y < -180) entity.setDirection(-dir);
+            
+            entity.setX(Math.max(-240, Math.min(240, x)));
+            entity.setY(Math.max(-180, Math.min(180, y)));
         }
 
-        clearEffects() { this.ghost = 0; this.brightness = 0; }
-
-        startDrawing() { this.penDown = true; this.lastPenX = this.x; this.lastPenY = this.y; }
-        stopDrawing() { this.penDown = false; }
-        setBrushColor(color) { this.penColor = color; }
-        setBrushThickness(t) { this.penThickness = t; }
-        
-        drawPen(newX, newY) {
-            this.runtime.renderer.drawPenLine(this.lastPenX, this.lastPenY, newX, newY, this.penColor, this.penThickness);
-            this.lastPenX = newX;
-            this.lastPenY = newY;
+        getObjectCoord(targetId, coord) {
+            const target = this.findEntity(targetId);
+            if (!target) return 0;
+            switch(coord) {
+                case 'x': return target.getX();
+                case 'y': return target.getY();
+                case 'rotation': return target.getRotation();
+                case 'direction': return target.getDirection();
+                case 'size': return target.getSize();
+            }
+            return 0;
         }
 
-        stamp() { this.runtime.renderer.stamp(this); }
-
-        isTouching(targetId) {
-            if (targetId === 'mouse') return this.containsPoint(this.runtime.mouseX, this.runtime.mouseY);
-            if (targetId === 'wall' || targetId.startsWith('wall_')) return this.isTouchingWall(targetId);
-            const target = this.runtime.objects.get(targetId);
-            return target ? this.getBounds().intersects(target.getBounds()) : false;
-        }
-
-        isTouchingWall(wallType) {
-            const b = this.getBounds();
-            switch (wallType) {
-                case 'wall': return b.left < -240 || b.right > 240 || b.top > 180 || b.bottom < -180;
-                case 'wall_up': return b.top > 180;
-                case 'wall_down': return b.bottom < -180;
-                case 'wall_left': return b.left < -240;
-                case 'wall_right': return b.right > 240;
+        isTouching(entity, targetId) {
+            if (typeof Entry !== 'undefined') {
+                // Entry 원본 충돌 감지 사용
+                const object = entity.parent;
+                if (object?.script) {
+                    return Entry.Utils.isTouching(entity, targetId);
+                }
             }
             return false;
         }
 
-        getBounds() {
-            const hw = (this.textureInfo?.width || 100) * Math.abs(this.scaleX) / 2;
-            const hh = (this.textureInfo?.height || 100) * Math.abs(this.scaleY) / 2;
-            return {
-                left: this.x - hw, right: this.x + hw, top: this.y + hh, bottom: this.y - hh,
-                intersects(o) { return !(this.left > o.right || this.right < o.left || this.top < o.bottom || this.bottom > o.top); }
-            };
-        }
-
-        containsPoint(px, py) {
-            const b = this.getBounds();
-            return px >= b.left && px <= b.right && py >= b.bottom && py <= b.top;
-        }
-
-        clone() {
-            const c = new TurboEntity(this.runtime, { id: `${this.id}_clone_${Date.now()}`, name: this.name });
-            Object.assign(c, { x: this.x, y: this.y, rotation: this.rotation, direction: this.direction,
-                scaleX: this.scaleX, scaleY: this.scaleY, size: this.size, visible: this.visible,
-                ghost: this.ghost, brightness: this.brightness, costumes: this.costumes,
-                currentCostumeIndex: this.currentCostumeIndex, textureInfo: this.textureInfo, isClone: true });
-            return c;
-        }
-
-        destroy() {
-            if (this.isClone) {
-                const idx = this.runtime.clones.indexOf(this);
-                if (idx !== -1) this.runtime.clones.splice(idx, 1);
-            }
-            this.visible = false;
-        }
-    }
-
-    // ============================================================
-    // TurboRuntime - 메인 런타임
-    // ============================================================
-    
-    class TurboRuntime {
-        constructor(renderer) {
-            this.renderer = renderer;
-            this.compiler = BlockCompiler;
-            
-            this.running = false;
-            this.paused = false;
-            this.startTime = 0;
-            this.timer = 0;
-            this.timerRunning = false;
-            
-            this.objects = new Map();
-            this.entities = [];
-            this.clones = [];
-            this.executors = [];
-            
-            this.variables = {};
-            this.lists = {};
-            this.eventListeners = new Map();
-            
-            this.pressedKeys = new Set();
-            this.mouseX = 0;
-            this.mouseY = 0;
-            this.isMouseDown = false;
-            
-            this.audioContext = null;
-            this.sounds = new Map();
-            this.activeSounds = [];
-            this.volume = 1;
-            
-            this.rafId = null;
-            
-            this.initInput();
-            this.initAudio();
-        }
-
-        initInput() {
-            document.addEventListener('keydown', e => {
-                this.pressedKeys.add(e.keyCode);
-                if (this.running) this.fireEvent(`keyPress_${e.keyCode}`);
-            });
-            document.addEventListener('keyup', e => this.pressedKeys.delete(e.keyCode));
-            
-            if (this.renderer?.canvas) {
-                const canvas = this.renderer.canvas;
-                canvas.addEventListener('mousemove', e => {
-                    const rect = canvas.getBoundingClientRect();
-                    this.mouseX = (e.clientX - rect.left) / rect.width * 480 - 240;
-                    this.mouseY = -((e.clientY - rect.top) / rect.height * 360 - 180);
-                });
-                canvas.addEventListener('mousedown', () => { this.isMouseDown = true; });
-                canvas.addEventListener('mouseup', () => { this.isMouseDown = false; });
-            }
-        }
-
-        initAudio() {
-            try {
-                this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            } catch (e) {}
-        }
-
-        async loadProject(data) {
-            if (data.variables) {
-                for (const v of data.variables) this.variables[v.id] = v.value;
-            }
-            if (data.lists) {
-                for (const l of data.lists) this.lists[l.id] = [...(l.array || [])];
-            }
-            if (data.objects) {
-                for (const obj of data.objects) await this.loadObject(obj);
-            }
-        }
-
-        async loadObject(objData) {
-            const entity = new TurboEntity(this, objData);
-            
-            if (objData.sprite?.pictures) {
-                for (const pic of objData.sprite.pictures) {
-                    const url = this.getPictureUrl(pic);
-                    const textureInfo = await this.renderer.loadTexture(url);
-                    entity.costumes.push({ id: pic.id, name: pic.name, textureInfo });
-                }
-                entity.setCostume(0);
-            }
-            
-            if (objData.script) {
-                const scripts = typeof objData.script === 'string' ? JSON.parse(objData.script) : objData.script;
-                for (const thread of scripts) {
-                    if (!thread?.length) continue;
-                    const firstBlock = thread[0];
-                    const eventType = this.getEventType(firstBlock);
-                    if (eventType) {
-                        const compiledFn = this.compiler.compileThread(thread.slice(1));
-                        this.registerEvent(eventType, entity, compiledFn, firstBlock.params);
-                    }
-                }
-            }
-            
-            this.objects.set(objData.id, entity);
-            this.entities.push(entity);
-            return entity;
-        }
-
-        getEventType(block) {
-            if (!block) return null;
-            const map = {
-                'when_run_button_click': 'start',
-                'when_some_key_pressed': 'keyPress',
-                'when_object_click': 'click',
-                'when_message_cast': 'message',
-                'when_clone_start': 'clone'
-            };
-            return map[block.type] || null;
-        }
-
-        registerEvent(eventType, entity, fn, params = []) {
-            let key = eventType;
-            if (eventType === 'keyPress') key = `keyPress_${params[0]}`;
-            else if (eventType === 'message') key = `message_${params[0]}`;
-            
-            if (!this.eventListeners.has(key)) this.eventListeners.set(key, []);
-            this.eventListeners.get(key).push({ entity, fn });
-        }
-
-        fireEvent(key) {
-            const listeners = this.eventListeners.get(key);
-            if (listeners) {
-                for (const { entity, fn } of listeners) {
-                    if (entity.visible) this.startExecutor(entity, fn);
-                }
-            }
-        }
-
-        startExecutor(entity, fn) {
-            this.executors.push({ entity, generator: fn(entity, this), waitUntil: 0 });
-        }
-
-        start() {
-            if (this.running) return;
-            this.running = true;
-            this.paused = false;
-            this.startTime = performance.now();
-            this.fireEvent('start');
-            this.mainLoop();
-        }
-
-        stop() {
-            this.running = false;
-            if (this.rafId) cancelAnimationFrame(this.rafId);
-            this.executors = [];
-            for (const c of this.clones) c.destroy();
-            this.clones = [];
-            this.stopAllSounds();
-            for (const e of this.entities) e.reset();
-            this.render();
-        }
-
-        togglePause() { this.paused = !this.paused; }
-
-        mainLoop() {
-            if (!this.running) return;
-            const now = performance.now();
-            
-            if (!this.paused) {
-                this.updateExecutors(now);
-                if (this.timerRunning) this.timer = (now - this.startTime) / 1000;
-            }
-            
-            this.render();
-            this.rafId = requestAnimationFrame(() => this.mainLoop());
-        }
-
-        updateExecutors(now) {
-            const completed = [];
-            for (let i = 0; i < this.executors.length; i++) {
-                const exec = this.executors[i];
-                if (exec.waitUntil > now) continue;
-                
-                try {
-                    const result = exec.generator.next();
-                    if (result.done) completed.push(i);
-                    else if (result.value?.type === 'wait') exec.waitUntil = now + result.value.duration;
-                } catch (e) {
-                    console.error('Executor error:', e);
-                    completed.push(i);
-                }
-            }
-            for (let i = completed.length - 1; i >= 0; i--) {
-                this.executors.splice(completed[i], 1);
-            }
-        }
-
-        render() {
-            this.renderer.beginFrame();
-            const all = [...this.entities, ...this.clones].filter(e => e.visible).sort((a, b) => (a.zIndex || 0) - (b.zIndex || 0));
-            for (const e of all) this.renderer.addSprite(e);
-            this.renderer.endFrame();
-        }
-
-        // Runtime utilities
-        random(min, max) {
-            min = Number(min); max = Number(max);
-            if (min > max) [min, max] = [max, min];
-            return Number.isInteger(min) && Number.isInteger(max)
-                ? Math.floor(Math.random() * (max - min + 1)) + min
-                : Math.random() * (max - min) + min;
-        }
-
-        isKeyPressed(keyCode) { return this.pressedKeys.has(Number(keyCode)); }
-        getTimer() { return this.timer; }
-        startTimer() { this.timerRunning = true; this.startTime = performance.now(); }
-        resetTimer() { this.timer = 0; this.startTime = performance.now(); }
-        
-        broadcast(msgId) { this.fireEvent(`message_${msgId}`); }
-        async *broadcastAndWait(msgId) {
-            const before = this.executors.length;
-            this.broadcast(msgId);
-            while (this.executors.length > before) yield { type: 'tick' };
-        }
-
-        createClone(targetId) {
-            const target = this.objects.get(targetId);
-            if (!target || this.clones.length >= 360) return;
-            const clone = target.clone();
-            this.clones.push(clone);
-        }
-
-        say(entity, text) {
-            entity.dialog = String(text);
-            this.renderer.renderDialog(entity, entity.dialog);
-        }
-
-        async *sayForSecs(entity, text, seconds) {
-            this.say(entity, text);
-            yield { type: 'wait', duration: seconds * 1000 };
-            this.removeDialog(entity);
+        // === 대화 ===
+        showDialog(entity, text, type) {
+            if (entity.dialog) entity.dialog.remove();
+            entity.dialog = new Entry.Dialog(entity, String(text), type);
         }
 
         removeDialog(entity) {
-            entity.dialog = null;
-            this.renderer.clearDialog();
-        }
-
-        async *rotateDuring(entity, angle, duration) {
-            const start = entity.rotation;
-            const startTime = performance.now();
-            const endTime = startTime + duration * 1000;
-            while (performance.now() < endTime) {
-                const progress = (performance.now() - startTime) / (duration * 1000);
-                entity.setRotation(start + angle * progress);
-                yield { type: 'tick' };
+            if (entity.dialog) {
+                entity.dialog.remove();
+                entity.dialog = null;
             }
-            entity.setRotation(start + angle);
         }
 
+        // === 소리 ===
         playSound(entity, soundId) {
-            const sound = this.sounds.get(soundId);
-            if (!sound || !this.audioContext) return;
-            const source = this.audioContext.createBufferSource();
-            source.buffer = sound.buffer;
-            const gain = this.audioContext.createGain();
-            gain.gain.value = this.volume;
-            source.connect(gain);
-            gain.connect(this.audioContext.destination);
-            source.start();
-            this.activeSounds.push({ source, gain });
+            if (typeof Entry === 'undefined') return;
+            const object = entity.parent;
+            const sound = object?.getSound(soundId);
+            if (sound) createjs.Sound.play(sound.id);
         }
 
-        async *playSoundAndWait(entity, soundId) {
-            const sound = this.sounds.get(soundId);
-            if (!sound || !this.audioContext) return;
+        *playSoundWait(entity, soundId) {
             this.playSound(entity, soundId);
-            yield { type: 'wait', duration: sound.buffer.duration * 1000 };
+            const object = entity.parent;
+            const sound = object?.getSound(soundId);
+            if (sound?.duration) {
+                yield { type: 'wait', duration: sound.duration * 1000 };
+            }
+        }
+
+        setVolume(value) {
+            if (typeof createjs !== 'undefined') {
+                createjs.Sound.setVolume(Math.max(0, Math.min(100, value)) / 100);
+            }
+        }
+
+        changeVolume(delta) {
+            if (typeof createjs !== 'undefined') {
+                const current = createjs.Sound.getVolume() * 100;
+                this.setVolume(current + delta);
+            }
         }
 
         stopAllSounds() {
-            for (const { source } of this.activeSounds) {
-                try { source.stop(); } catch (e) {}
+            if (typeof createjs !== 'undefined') {
+                createjs.Sound.stop();
             }
-            this.activeSounds = [];
         }
 
-        setVolume(vol) { this.volume = Math.max(0, Math.min(1, vol / 100)); }
-        changeVolume(delta) { this.setVolume((this.volume + delta / 100) * 100); }
-        clearCanvas() { this.renderer.clearPen(); }
+        // === 복제 ===
+        createClone(entity, targetId) {
+            if (typeof Entry === 'undefined') return;
+            const object = targetId === 'self' ? entity.parent : Entry.container.getObject(targetId);
+            if (object) object.addCloneEntity(object, entity);
+        }
+
+        removeClone(entity) {
+            if (entity.isClone && entity.removeClone) {
+                entity.removeClone();
+            }
+        }
+
+        // === 신호 ===
+        broadcast(messageId) {
+            if (typeof Entry !== 'undefined' && Entry.engine) {
+                Entry.engine.raiseMessage(messageId);
+            }
+        }
+
+        *broadcastWait(messageId) {
+            this.broadcast(messageId);
+            yield { type: 'tick' };
+            // 메시지 수신 실행자가 끝날 때까지 대기
+            while (this.hasActiveMessageHandlers(messageId)) {
+                yield { type: 'tick' };
+            }
+        }
+
+        hasActiveMessageHandlers(messageId) {
+            // 간단한 구현 - 한 프레임 대기
+            return false;
+        }
+
+        // === 묻고 답하기 ===
+        *askAndWait(entity, question) {
+            if (typeof Entry === 'undefined') return;
+            Entry.container.showProjectAnswer();
+            this.showDialog(entity, question, 'speak');
+            Entry.stage.showInputField();
+            
+            yield { type: 'waitInput' };
+            
+            this.removeDialog(entity);
+        }
+
+        // === 붓 (Entry API 사용) ===
+        startDrawing(entity) {
+            if (typeof Entry === 'undefined') return;
+            
+            if (entity.brush) {
+                entity.brush.stop = false;
+            } else {
+                Entry.setBasicBrush(entity);
+            }
+            entity.brush.moveTo(entity.getX(), entity.getY() * -1);
+        }
         
-        showVariable(id) {}
-        hideVariable(id) {}
+        stopDrawing(entity) {
+            if (entity.brush) {
+                entity.brush.stop = true;
+            }
+        }
         
-        getObjectCoord(id, coord) {
-            const e = this.objects.get(id);
-            if (!e) return 0;
-            return { x: e.x, y: e.y, rotation: e.rotation, direction: e.direction, size: e.size }[coord] || 0;
+        setBrushColor(entity, color) {
+            if (typeof Entry === 'undefined') return;
+            
+            if (!entity.brush || !entity.shapes?.length) {
+                Entry.setBasicBrush(entity);
+                entity.brush.stop = true;
+            }
+            
+            if (entity.brush) {
+                const rgb = Entry.hex2rgb(color);
+                entity.brush.rgb = rgb;
+                entity.brush.endStroke();
+                entity.brush.beginStroke(
+                    `rgba(${rgb.r},${rgb.g},${rgb.b},${1 - entity.brush.opacity / 100})`
+                );
+                entity.brush.moveTo(entity.getX(), entity.getY() * -1);
+            }
         }
 
-        getPictureUrl(pic) {
-            if (pic.fileurl) return pic.fileurl;
-            const f = pic.filename;
-            return `https://playentry.org/uploads/${f.slice(0,2)}/${f.slice(2,4)}/image/${f}.png`;
+        setBrushThickness(entity, value) {
+            if (typeof Entry === 'undefined') return;
+            
+            if (!entity.brush || !entity.shapes?.length) {
+                Entry.setBasicBrush(entity);
+                entity.brush.stop = true;
+            }
+            
+            if (entity.brush) {
+                entity.brush.thickness = value;
+                entity.brush.setStrokeStyle(value);
+                entity.brush.moveTo(entity.getX(), entity.getY() * -1);
+            }
+        }
+        
+        changeBrushThickness(entity, value) {
+            if (typeof Entry === 'undefined') return;
+            
+            if (!entity.brush || !entity.shapes?.length) {
+                Entry.setBasicBrush(entity);
+                entity.brush.stop = true;
+            }
+            
+            if (entity.brush) {
+                entity.brush.thickness = Math.max(1, (entity.brush.thickness || 1) + value);
+                entity.brush.setStrokeStyle(entity.brush.thickness);
+                entity.brush.moveTo(entity.getX(), entity.getY() * -1);
+            }
+        }
+        
+        setBrushTransparency(entity, value) {
+            if (typeof Entry === 'undefined') return;
+            
+            if (!entity.brush || !entity.shapes?.length) {
+                Entry.setBasicBrush(entity);
+                entity.brush.stop = true;
+            }
+            
+            if (entity.brush) {
+                const opacity = Entry.adjustValueWithMaxMin(value, 0, 100);
+                entity.brush.opacity = opacity;
+                entity.brush.endStroke();
+                const rgb = entity.brush.rgb;
+                entity.brush.beginStroke(
+                    `rgba(${rgb.r},${rgb.g},${rgb.b},${1 - opacity / 100})`
+                );
+                entity.brush.moveTo(entity.getX(), entity.getY() * -1);
+            }
+        }
+        
+        changeBrushTransparency(entity, value) {
+            if (typeof Entry === 'undefined') return;
+            
+            if (!entity.brush || !entity.shapes?.length) {
+                Entry.setBasicBrush(entity);
+                entity.brush.stop = true;
+            }
+            
+            if (entity.brush) {
+                const newOpacity = Entry.adjustValueWithMaxMin(
+                    (entity.brush.opacity || 0) + value, 0, 100
+                );
+                entity.brush.opacity = newOpacity;
+                entity.brush.endStroke();
+                const rgb = entity.brush.rgb;
+                entity.brush.beginStroke(
+                    `rgba(${rgb.r},${rgb.g},${rgb.b},${1 - newOpacity / 100})`
+                );
+                entity.brush.moveTo(entity.getX(), entity.getY() * -1);
+            }
+        }
+        
+        setRandomBrushColor(entity) {
+            if (typeof Entry === 'undefined') return;
+            
+            if (!entity.brush || !entity.shapes?.length) {
+                Entry.setBasicBrush(entity);
+                entity.brush.stop = true;
+            }
+            
+            if (entity.brush) {
+                const rgb = Entry.generateRgb();
+                entity.brush.rgb = rgb;
+                entity.brush.endStroke();
+                entity.brush.beginStroke(
+                    `rgba(${rgb.r},${rgb.g},${rgb.b},${1 - entity.brush.opacity / 100})`
+                );
+                entity.brush.moveTo(entity.getX(), entity.getY() * -1);
+            }
         }
 
-        destroy() {
-            this.stop();
-            if (this.audioContext) this.audioContext.close();
-            this.renderer.destroy();
+        clearBrush(entity) {
+            if (typeof Entry === 'undefined') return;
+            entity.eraseBrush?.();
+            entity.erasePaint?.();
+            entity.removeStamps?.();
+        }
+
+        stamp(entity) {
+            entity.addStamp?.();
+        }
+        
+        // === 타이머 ===
+        timerAction(action) {
+            if (typeof Entry === 'undefined') return;
+            
+            if (action === 'start') {
+                Entry.engine.toggleProjectTimer();
+            } else if (action === 'stop') {
+                Entry.engine.toggleProjectTimer(false);
+            } else if (action === 'reset') {
+                Entry.engine.resetProjectTimer();
+            }
+        }
+        
+        setTimerVisible(visible) {
+            if (typeof Entry === 'undefined') return;
+            
+            const timer = Entry.variableContainer?.getTimerView?.();
+            if (timer) {
+                timer.style.display = (visible === 'show') ? 'block' : 'none';
+            }
+        }
+
+        // === 프로젝트 제어 ===
+        stopAll() {
+            if (typeof Entry !== 'undefined' && Entry.engine) {
+                Entry.engine.toggleStop();
+            }
+        }
+
+        restartProject() {
+            if (typeof Entry !== 'undefined' && Entry.engine) {
+                Entry.engine.toggleStop();
+                setTimeout(() => Entry.engine.toggleRun(), 100);
+            }
+        }
+
+        // === 코스튬 ===
+        setCostume(entity, pictureId) {
+            const object = entity.parent;
+            if (object) {
+                const picture = object.getPicture(pictureId);
+                if (picture) entity.setImage(picture);
+            }
+        }
+
+        // === 헬퍼 ===
+        findEntity(id) {
+            if (typeof Entry === 'undefined') return null;
+            
+            if (id === 'mouse') return null;
+            
+            const object = Entry.container.getObject(id);
+            return object?.entity;
+        }
+
+        // === 함수 호출 ===
+        *callFunction(funcId, entity, params) {
+            if (typeof Entry === 'undefined') return;
+            
+            const func = Entry.variableContainer?.getFunction(funcId);
+            if (!func?.content) {
+                console.warn('[TurboRuntime] Function not found:', funcId);
+                return;
+            }
+            
+            // 함수의 funcDef 이벤트 실행자 생성
+            const funcCode = func.content;
+            const executors = funcCode.raiseEvent('funcDef', entity);
+            
+            if (!executors || executors.length === 0) return;
+            
+            const funcExecutor = executors[0];
+            
+            // 파라미터 설정
+            funcExecutor.register.params = params;
+            funcExecutor.register.paramMap = func.paramMap;
+            
+            // 함수 실행 (기존 Entry 실행기 사용)
+            while (!funcExecutor.isEnd()) {
+                funcExecutor.execute();
+                yield { type: 'tick' };
+            }
+            
+            funcCode.removeExecutor(funcExecutor);
+        }
+        
+        *callFunctionValue(funcId, entity, params) {
+            if (typeof Entry === 'undefined') return 0;
+            
+            const func = Entry.variableContainer?.getFunction(funcId);
+            if (!func?.content) {
+                console.warn('[TurboRuntime] Function not found:', funcId);
+                return 0;
+            }
+            
+            const funcCode = func.content;
+            const executors = funcCode.raiseEvent('funcDef', entity);
+            
+            if (!executors || executors.length === 0) return 0;
+            
+            const funcExecutor = executors[0];
+            funcExecutor.register.params = params;
+            funcExecutor.register.paramMap = func.paramMap;
+            
+            while (!funcExecutor.isEnd()) {
+                funcExecutor.execute();
+                yield { type: 'tick' };
+            }
+            
+            // 반환 값 가져오기
+            const result = funcExecutor.result;
+            funcCode.removeExecutor(funcExecutor);
+            
+            if (result && result.getValue) {
+                return result.getValue('VALUE', result);
+            }
+            return 0;
+        }
+        
+        // 함수 파라미터 가져오기
+        getFunctionParam(entity, paramType) {
+            // 현재 실행 중인 executor의 register에서 파라미터 값 가져오기
+            // 이건 컴파일된 코드에서는 직접 접근이 어려우므로 0 반환
+            // TODO: executor context를 통해 파라미터 접근 구현
+            return 0;
+        }
+
+        // === Entry 블록 폴백 실행 ===
+        *executeEntryBlock(block, entity) {
+            console.warn('[TurboRuntime] Skipping unsupported block:', block?.type);
+            return;
+        }
+
+        *evalBlock(block, entity) {
+            console.warn('[TurboRuntime] Skipping unsupported expression:', block?.type);
+            return 0;
         }
     }
 
     // ============================================================
     // EntryTurbo - 메인 API
     // ============================================================
-    
+
     const EntryTurbo = {
-        version: '1.0.0',
-        renderer: null,
+        version: '2.0.0',
+        compiler: TurboCompiler,
         runtime: null,
         
-        // 주입 관련
         injected: false,
+        active: false,
         overlayCanvas: null,
-        originalToggleRun: null,
-        originalToggleStop: null,
-        projectLoaded: false,
+        
+        _originalToggleRun: null,
+        _originalToggleStop: null,
+        _originalTick: null,
 
         /**
-         * 캔버스에 초기화
+         * Entry 시스템에 주입
          */
-        init(canvas) {
-            if (typeof canvas === 'string') {
-                canvas = document.getElementById(canvas.replace('#', '')) || document.querySelector(canvas);
+        inject() {
+            if (this.injected) return this;
+
+            if (typeof Entry === 'undefined' || !Entry.engine) {
+                const poll = setInterval(() => {
+                    if (typeof Entry !== 'undefined' && Entry.engine) {
+                        clearInterval(poll);
+                        this.inject();
+                    }
+                }, 100);
+                return this;
             }
-            
-            if (!canvas) {
-                canvas = document.createElement('canvas');
-                canvas.id = 'entry-turbo-canvas';
-                canvas.width = 480;
-                canvas.height = 360;
-                document.body.appendChild(canvas);
-            }
-            
-            this.renderer = new TurboRenderer(canvas);
-            this.runtime = new TurboRuntime(this.renderer);
+
+            this.runtime = new TurboRuntime();
+            this._createOverlay();
+            this._hookEntryEngine();
+            this._hookCodeExecution();
+
+            this.injected = true;
+            console.log('[EntryTurbo] ✓ JIT 컴파일러 주입 완료');
             
             return this;
         },
 
-        /**
-         * 기존 Entry 시스템에 주입 - entryCanvas 위에 오버레이 생성
-         */
-        inject() {
-            if (this.injected) return this;
-            
+        _createOverlay() {
             const entryCanvas = document.getElementById('entryCanvas');
-            if (!entryCanvas) {
-                console.warn('[EntryTurbo] #entryCanvas를 찾을 수 없습니다. 나중에 다시 시도하세요.');
-                return this;
-            }
-            
-            // 오버레이 캔버스 생성
+            if (!entryCanvas) return;
+
             this.overlayCanvas = document.createElement('canvas');
             this.overlayCanvas.id = 'entry-turbo-overlay';
             this.overlayCanvas.width = entryCanvas.width || 480;
             this.overlayCanvas.height = entryCanvas.height || 360;
-            
-            // 스타일 설정 - entryCanvas 위에 절대 위치
             this.overlayCanvas.style.cssText = `
-                position: absolute;
-                top: 0;
-                left: 0;
-                width: 100%;
-                height: 100%;
-                z-index: 9999;
-                pointer-events: auto;
-                display: none;
+                position: absolute; top: 0; left: 0;
+                width: 100%; height: 100%;
+                z-index: 9999; pointer-events: none;
+                display: none; background: transparent;
             `;
-            
-            // entryCanvas의 부모에 relative 설정 후 오버레이 추가
+
             const parent = entryCanvas.parentElement;
             if (parent) {
-                const computedStyle = window.getComputedStyle(parent);
-                if (computedStyle.position === 'static') {
+                if (getComputedStyle(parent).position === 'static') {
                     parent.style.position = 'relative';
                 }
                 parent.appendChild(this.overlayCanvas);
             }
-            
-            // 렌더러와 런타임 초기화
-            this.renderer = new TurboRenderer(this.overlayCanvas);
-            this.runtime = new TurboRuntime(this.renderer);
-            
-            // Entry.engine 가로채기
-            this._hookEntryEngine();
-            
-            this.injected = true;
-            console.log('[EntryTurbo] 주입 완료 - 시작/정지 버튼이 Turbo 모드로 작동합니다.');
-            
-            return this;
         },
 
-        /**
-         * Entry.engine의 toggleRun/toggleStop 가로채기
-         */
         _hookEntryEngine() {
             const self = this;
-            
-            // Entry 객체가 있는지 확인
-            if (typeof Entry === 'undefined' || !Entry.engine) {
-                console.warn('[EntryTurbo] Entry.engine을 찾을 수 없습니다. 폴링 시작...');
-                
-                // Entry가 로드될 때까지 폴링
-                const pollInterval = setInterval(() => {
-                    if (typeof Entry !== 'undefined' && Entry.engine) {
-                        clearInterval(pollInterval);
-                        self._hookEntryEngine();
-                    }
-                }, 100);
-                return;
-            }
-            
-            // 원본 함수 저장
-            this.originalToggleRun = Entry.engine.toggleRun.bind(Entry.engine);
-            this.originalToggleStop = Entry.engine.toggleStop.bind(Entry.engine);
-            
-            // toggleRun 가로채기
-            Entry.engine.toggleRun = async function() {
-                console.log('[EntryTurbo] toggleRun 가로챔');
-                
-                // 프로젝트 데이터 로드 (아직 안 했으면)
-                if (!self.projectLoaded) {
-                    await self._loadCurrentProject();
-                }
-                
-                // 기존 Entry 엔진 정지 상태 유지
-                if (Entry.engine.state !== 'stop') {
-                    // 이미 실행 중이면 원래 동작
-                    return self.originalToggleRun();
-                }
-                
-                // Turbo 모드 실행
+
+            this._originalToggleRun = Entry.engine.toggleRun.bind(Entry.engine);
+            this._originalToggleStop = Entry.engine.toggleStop.bind(Entry.engine);
+
+            Entry.engine.toggleRun = function(disableAchieve) {
+                console.log('[EntryTurbo] ▶ JIT 컴파일 실행');
+                self.active = true;
+                self.runtime.timerStart = performance.now();
                 self._showOverlay();
-                self.start();
+                return self._originalToggleRun(disableAchieve);
             };
-            
-            // toggleStop 가로채기
-            Entry.engine.toggleStop = async function() {
-                console.log('[EntryTurbo] toggleStop 가로챔');
-                
-                // Turbo 정지
-                self.stop();
+
+            Entry.engine.toggleStop = function() {
+                console.log('[EntryTurbo] ■ 정지');
+                self.active = false;
                 self._hideOverlay();
-                
-                // 원본도 호출하여 UI 상태 동기화
-                // return self.originalToggleStop();
+                self.compiler.clearCache();
+                return self._originalToggleStop();
             };
-            
-            console.log('[EntryTurbo] Entry.engine 후킹 완료');
         },
 
         /**
-         * 현재 Entry 프로젝트 데이터 로드
+         * Entry Code 실행을 후킹하여 JIT 컴파일된 코드 실행
          */
-        async _loadCurrentProject() {
-            try {
-                // Entry.project에서 데이터 가져오기
-                if (typeof Entry !== 'undefined' && Entry.exportProject) {
-                    const projectData = Entry.exportProject();
-                    if (projectData) {
-                        await this.load(projectData);
-                        this.projectLoaded = true;
-                        console.log('[EntryTurbo] 프로젝트 로드 완료');
-                        return;
-                    }
-                }
+        _hookCodeExecution() {
+            const self = this;
+
+            // Entry.Code.prototype.tick 후킹
+            if (Entry.Code?.prototype) {
+                const originalTick = Entry.Code.prototype.tick;
                 
-                // container에서 직접 가져오기
-                if (typeof Entry !== 'undefined' && Entry.container) {
-                    const objects = Entry.container.objects_ || Entry.container.objects;
-                    const variables = Entry.variableContainer?.variables_ || [];
-                    const lists = Entry.variableContainer?.lists_ || [];
+                Entry.Code.prototype.tick = function() {
+                    if (!self.active) {
+                        return originalTick.call(this);
+                    }
+
+                    // Turbo 모드: 컴파일된 실행자 사용
+                    const executors = this.executors;
+                    for (let i = executors.length - 1; i >= 0; i--) {
+                        const executor = executors[i];
+                        
+                        if (executor.isPause?.()) continue;
+                        
+                        if (executor.isEnd?.()) {
+                            executors.splice(i, 1);
+                            continue;
+                        }
+
+                        // 컴파일된 실행자가 있으면 사용
+                        if (executor._turboGenerator) {
+                            self._runTurboExecutor(executor);
+                        } else {
+                            // 기존 실행
+                            executor.execute(true);
+                        }
+                    }
+                };
+            }
+
+            // Executor 생성 시 JIT 컴파일
+            if (Entry.Executor) {
+                const OriginalExecutor = Entry.Executor;
+                
+                Entry.Executor = function(block, entity, code) {
+                    const executor = new OriginalExecutor(block, entity, code);
                     
-                    if (objects && objects.length > 0) {
-                        const projectData = {
-                            objects: objects.map(obj => obj.toJSON ? obj.toJSON() : obj),
-                            variables: variables.map(v => v.toJSON ? v.toJSON() : v),
-                            lists: lists.map(l => l.toJSON ? l.toJSON() : l)
-                        };
-                        await this.load(projectData);
-                        this.projectLoaded = true;
-                        console.log('[EntryTurbo] 프로젝트 로드 완료 (container에서)');
-                        return;
+                    if (self.active && block) {
+                        try {
+                            // 스레드의 블록들을 JIT 컴파일
+                            const thread = block.thread;
+                            if (thread) {
+                                const blocks = thread.getBlocks().map(b => b.toJSON ? b.toJSON() : b);
+                                const compiledFn = self.compiler.compileThread(blocks, entity.parent?.id);
+                                executor._turboGenerator = compiledFn(entity, self.runtime);
+                            }
+                        } catch (e) {
+                            console.warn('[EntryTurbo] JIT 컴파일 실패, 폴백:', e);
+                        }
                     }
-                }
+                    
+                    return executor;
+                };
                 
-                console.warn('[EntryTurbo] 프로젝트 데이터를 가져올 수 없습니다.');
-            } catch (e) {
-                console.error('[EntryTurbo] 프로젝트 로드 실패:', e);
+                // 프로토타입 복사
+                Entry.Executor.prototype = OriginalExecutor.prototype;
             }
         },
 
-        /**
-         * 오버레이 캔버스 표시
-         */
+        _runTurboExecutor(executor) {
+            const gen = executor._turboGenerator;
+            if (!gen) return;
+
+            try {
+                const result = gen.next();
+                
+                if (result.done) {
+                    executor.end();
+                    return;
+                }
+
+                const value = result.value;
+                if (value) {
+                    if (value.type === 'wait') {
+                        executor._turboWaitUntil = performance.now() + value.duration;
+                    } else if (value.type === 'tick') {
+                        // 다음 틱에서 계속
+                    } else if (value.type === 'promise') {
+                        executor.paused = true;
+                        value.promise.then(() => {
+                            executor.paused = false;
+                        });
+                    }
+                }
+            } catch (e) {
+                console.error('[EntryTurbo] 실행 오류:', e);
+                executor.end();
+            }
+        },
+
         _showOverlay() {
             if (this.overlayCanvas) {
                 this.overlayCanvas.style.display = 'block';
-                
-                // 크기 동기화
-                const entryCanvas = document.getElementById('entryCanvas');
-                if (entryCanvas) {
-                    this.overlayCanvas.width = entryCanvas.width || 480;
-                    this.overlayCanvas.height = entryCanvas.height || 360;
-                    this.renderer?.resize(this.overlayCanvas.width, this.overlayCanvas.height);
-                }
+                this._updateOverlay();
             }
         },
 
-        /**
-         * 오버레이 캔버스 숨김
-         */
         _hideOverlay() {
             if (this.overlayCanvas) {
                 this.overlayCanvas.style.display = 'none';
             }
         },
 
-        /**
-         * 주입 해제
-         */
+        _updateOverlay() {
+            if (!this.active || !this.overlayCanvas) return;
+
+            const ctx = this.overlayCanvas.getContext('2d');
+            ctx.clearRect(0, 0, this.overlayCanvas.width, this.overlayCanvas.height);
+
+            // Turbo 인디케이터
+            ctx.fillStyle = 'rgba(0, 200, 100, 0.8)';
+            ctx.fillRect(5, 5, 80, 20);
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 12px sans-serif';
+            ctx.fillText('⚡ TURBO', 10, 18);
+
+            requestAnimationFrame(() => this._updateOverlay());
+        },
+
         eject() {
             if (!this.injected) return this;
-            
-            // 원본 함수 복원
-            if (typeof Entry !== 'undefined' && Entry.engine) {
-                if (this.originalToggleRun) {
-                    Entry.engine.toggleRun = this.originalToggleRun;
-                }
-                if (this.originalToggleStop) {
-                    Entry.engine.toggleStop = this.originalToggleStop;
-                }
+
+            if (this._originalToggleRun) {
+                Entry.engine.toggleRun = this._originalToggleRun;
             }
-            
-            // 오버레이 제거
-            if (this.overlayCanvas && this.overlayCanvas.parentElement) {
+            if (this._originalToggleStop) {
+                Entry.engine.toggleStop = this._originalToggleStop;
+            }
+
+            if (this.overlayCanvas?.parentElement) {
                 this.overlayCanvas.parentElement.removeChild(this.overlayCanvas);
             }
-            
+
             this.injected = false;
-            this.overlayCanvas = null;
-            this.projectLoaded = false;
-            
+            this.active = false;
+            this.compiler.clearCache();
+
             console.log('[EntryTurbo] 주입 해제 완료');
             return this;
         },
 
-        /**
-         * 프로젝트 JSON 로드
-         */
-        async load(projectJson) {
-            if (!this.runtime) {
-                throw new Error('EntryTurbo not initialized. Call init() or inject() first.');
-            }
-            
-            const data = typeof projectJson === 'string' ? JSON.parse(projectJson) : projectJson;
-            await this.runtime.loadProject(data);
-            
-            return this;
-        },
-
-        /**
-         * 프로젝트 URL에서 로드
-         */
-        async loadFromUrl(url) {
-            const response = await fetch(url);
-            const data = await response.json();
-            return this.load(data);
-        },
-
-        /**
-         * 실행 시작
-         */
-        start() {
-            if (this.runtime) {
-                this.runtime.start();
-            }
-            return this;
-        },
-
-        /**
-         * 실행 중지
-         */
-        stop() {
-            if (this.runtime) {
-                this.runtime.stop();
-            }
-            return this;
-        },
-
-        /**
-         * 일시정지/재개
-         */
-        togglePause() {
-            if (this.runtime) {
-                this.runtime.togglePause();
-            }
-            return this;
-        },
-
-        /**
-         * 실행 상태
-         */
-        get isRunning() {
-            return this.runtime?.running || false;
-        },
-
-        get isPaused() {
-            return this.runtime?.paused || false;
-        },
-
-        /**
-         * 리소스 정리
-         */
-        destroy() {
-            this.eject();
-            if (this.runtime) {
-                this.runtime.destroy();
-                this.runtime = null;
-            }
-            if (this.renderer) {
-                this.renderer = null;
-            }
+        // 디버그 모드
+        setDebug(enabled) {
+            this.compiler.debug = enabled;
         }
     };
 
+    // 자동 주입
+    if (typeof document !== 'undefined') {
+        const autoInject = () => {
+            if (typeof Entry !== 'undefined' && Entry.engine) {
+                EntryTurbo.inject();
+            } else {
+                const observer = new MutationObserver(() => {
+                    if (typeof Entry !== 'undefined' && Entry.engine && document.getElementById('entryCanvas')) {
+                        observer.disconnect();
+                        setTimeout(() => EntryTurbo.inject(), 500);
+                    }
+                });
+                if (document.body) {
+                    observer.observe(document.body, { childList: true, subtree: true });
+                }
+            }
+        };
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', autoInject);
+        } else {
+            autoInject();
+        }
+    }
+
     // 전역 노출
     global.EntryTurbo = EntryTurbo;
-    global.TurboRenderer = TurboRenderer;
+    global.TurboCompiler = TurboCompiler;
     global.TurboRuntime = TurboRuntime;
-    global.TurboEntity = TurboEntity;
-    global.BlockCompiler = BlockCompiler;
 
 })(typeof window !== 'undefined' ? window : global);
